@@ -6,6 +6,8 @@ enum VoicePowerError: LocalizedError {
     case invalidConfig(reason: String)
     case hotKeyRegistrationFailed(reason: String)
     case holdToTalkRegistrationFailed(reason: String)
+    case pythonRuntimeMissing
+    case runtimeBootstrapFailed(String)
     case microphonePermissionMissing
     case accessibilityPermissionMissing
     case inputMonitoringPermissionMissing
@@ -32,6 +34,10 @@ enum VoicePowerError: LocalizedError {
             return "Hotkey registration failed: \(reason)"
         case let .holdToTalkRegistrationFailed(reason):
             return "Hold-to-talk registration failed: \(reason)"
+        case .pythonRuntimeMissing:
+            return "Python 3 was not found. Install Python 3 or Xcode Command Line Tools, then reopen VoicePower."
+        case let .runtimeBootstrapFailed(details):
+            return "Runtime setup failed: \(details)"
         case .microphonePermissionMissing:
             return "Microphone permission is missing"
         case .accessibilityPermissionMissing:

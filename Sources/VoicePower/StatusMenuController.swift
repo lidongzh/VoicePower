@@ -3,17 +3,23 @@ import AppKit
 @MainActor
 final class StatusMenuController: NSObject {
     var onToggle: (() -> Void)?
-    var onToggleCleanup: (() -> Void)?
-    var onToggleSaveAudio: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
+    var onOpenInputMonitoringSettings: (() -> Void)?
+    var onPrepareRuntime: (() -> Void)?
     var onReload: (() -> Void)?
     var onQuit: (() -> Void)?
 
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private let statusLineItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
+    private let runtimeLineItem = NSMenuItem(title: "Runtime: Pending", action: nil, keyEquivalent: "")
+    private let whisperModelLineItem = NSMenuItem(title: "Whisper Model: Pending", action: nil, keyEquivalent: "")
+    private let cleanupModelLineItem = NSMenuItem(title: "Cleanup Model: Optional", action: nil, keyEquivalent: "")
+    private let holdToTalkPermissionLineItem = NSMenuItem(title: "Hold-to-talk: Ready", action: nil, keyEquivalent: "")
     private lazy var toggleItem = NSMenuItem(title: "Start Recording", action: #selector(handleToggle), keyEquivalent: "")
-    private lazy var cleanupItem = NSMenuItem(title: "Cleanup: Off", action: #selector(handleToggleCleanup), keyEquivalent: "")
-    private lazy var saveAudioItem = NSMenuItem(title: "Save Audio: On", action: #selector(handleToggleSaveAudio), keyEquivalent: "")
+    private lazy var settingsItem = NSMenuItem(title: "Settings…", action: #selector(handleOpenSettings), keyEquivalent: ",")
+    private lazy var openInputMonitoringSettingsItem = NSMenuItem(title: "Open Input Monitoring Settings", action: #selector(handleOpenInputMonitoringSettings), keyEquivalent: "")
+    private lazy var prepareRuntimeItem = NSMenuItem(title: "Prepare Runtime", action: #selector(handlePrepareRuntime), keyEquivalent: "")
     private lazy var reloadItem = NSMenuItem(title: "Reload Config", action: #selector(handleReload), keyEquivalent: "r")
     private lazy var quitItem = NSMenuItem(title: "Quit", action: #selector(handleQuit), keyEquivalent: "q")
     private let configPathItem = NSMenuItem(title: "Config: -", action: nil, keyEquivalent: "")
@@ -23,15 +29,22 @@ final class StatusMenuController: NSObject {
         super.init()
 
         toggleItem.target = self
-        cleanupItem.target = self
-        saveAudioItem.target = self
+        settingsItem.target = self
+        openInputMonitoringSettingsItem.target = self
+        prepareRuntimeItem.target = self
         reloadItem.target = self
         quitItem.target = self
 
         menu.addItem(statusLineItem)
+        menu.addItem(runtimeLineItem)
+        menu.addItem(whisperModelLineItem)
+        menu.addItem(cleanupModelLineItem)
+        menu.addItem(holdToTalkPermissionLineItem)
+        menu.addItem(.separator())
         menu.addItem(toggleItem)
-        menu.addItem(cleanupItem)
-        menu.addItem(saveAudioItem)
+        menu.addItem(settingsItem)
+        menu.addItem(openInputMonitoringSettingsItem)
+        menu.addItem(prepareRuntimeItem)
         menu.addItem(reloadItem)
         menu.addItem(.separator())
         menu.addItem(configPathItem)
@@ -58,26 +71,37 @@ final class StatusMenuController: NSObject {
         statusItem.button?.title = state.shortTitle
     }
 
-    func setCleanupEnabled(_ enabled: Bool) {
-        cleanupItem.title = "Cleanup: \(enabled ? "On" : "Off")"
-        cleanupItem.state = enabled ? .on : .off
+    func setRuntimeStatus(_ value: String) {
+        runtimeLineItem.title = "Runtime: \(value)"
     }
 
-    func setSaveAudioEnabled(_ enabled: Bool) {
-        saveAudioItem.title = "Save Audio: \(enabled ? "On" : "Off")"
-        saveAudioItem.state = enabled ? .on : .off
+    func setWhisperModelStatus(_ value: String) {
+        whisperModelLineItem.title = "Whisper Model: \(value)"
+    }
+
+    func setCleanupModelStatus(_ value: String) {
+        cleanupModelLineItem.title = "Cleanup Model: \(value)"
+    }
+
+    func setHoldToTalkPermissionStatus(_ value: String, needsAction: Bool) {
+        holdToTalkPermissionLineItem.title = "Hold-to-talk: \(value)"
+        openInputMonitoringSettingsItem.isHidden = !needsAction
     }
 
     @objc private func handleToggle() {
         onToggle?()
     }
 
-    @objc private func handleToggleCleanup() {
-        onToggleCleanup?()
+    @objc private func handleOpenSettings() {
+        onOpenSettings?()
     }
 
-    @objc private func handleToggleSaveAudio() {
-        onToggleSaveAudio?()
+    @objc private func handleOpenInputMonitoringSettings() {
+        onOpenInputMonitoringSettings?()
+    }
+
+    @objc private func handlePrepareRuntime() {
+        onPrepareRuntime?()
     }
 
     @objc private func handleReload() {

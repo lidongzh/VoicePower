@@ -1,7 +1,7 @@
 {
   "recordingsDirectory": "~/Library/Application Support/VoicePower/Recordings",
   "recording": {
-    "saveAudioFiles": true
+    "saveAudioFiles": false
   },
   "hotkey": {
     "keyCode": 49,
@@ -12,30 +12,17 @@
     "activationDelayMilliseconds": 180
   },
   "transcription": {
-    "command": "/absolute/path/to/python3",
-    "arguments": [
-      "/absolute/path/to/scripts/mlx_whisper_transcribe.py",
-      "--audio-path",
-      "{{audio_path}}",
-      "--model",
-      "mlx-community/whisper-large-v3-turbo",
-      "--language",
-      "auto"
-    ],
-    "outputTextPath": null
+    "model": "mlx-community/whisper-large-v3-turbo",
+    "language": "auto"
   },
   "normalization": {
-    "simplifiedChinese": true,
-    "command": "/absolute/path/to/python3",
-    "arguments": [
-      "/absolute/path/to/scripts/simplify_chinese_text.py"
-    ]
+    "simplifiedChinese": true
   },
   "cleanup": {
-    "enabled": true,
-    "endpoint": "http://127.0.0.1:11434/api/generate",
-    "model": "qwen2.5:3b",
-    "temperature": 0.1
+    "enabled": false,
+    "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    "temperature": 0.0,
+    "autoPunctuation": true
   },
   "insertion": {
     "restoreClipboard": true

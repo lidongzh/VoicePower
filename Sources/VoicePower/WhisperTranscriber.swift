@@ -4,7 +4,7 @@ struct WhisperTranscriber: Sendable {
     private let config: TranscriptionConfig
 
     init(config: TranscriptionConfig) {
-        self.config = config
+        self.config = config.withDefaults()
     }
 
     func transcribe(audioFileURL: URL) throws -> String {
@@ -13,42 +13,17 @@ struct WhisperTranscriber: Sendable {
         try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 
         let outputBase = outputDirectory.appendingPathComponent(audioFileURL.deletingPathExtension().lastPathComponent)
-        let commandPath = expand(
-            config.command,
-            audioPath: audioFileURL.path,
-            outputBase: outputBase.path
+        let invocation = try makeInvocation(audioFileURL: audioFileURL, outputBase: outputBase)
+        let result = try ProcessRunner.run(
+            executableURL: invocation.executableURL,
+            arguments: invocation.arguments,
+            environment: invocation.environment
         )
 
-        guard fileManager.isExecutableFile(atPath: commandPath) else {
-            throw VoicePowerError.transcriptionCommandNotExecutable(commandPath)
-        }
+        let stdout = result.standardOutput
+        let stderr = result.standardError
 
-        let arguments = config.arguments.map {
-            expand($0, audioPath: audioFileURL.path, outputBase: outputBase.path)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: commandPath)
-        process.arguments = arguments
-
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stdout = String(
-            data: standardOutput.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let stderr = String(
-            data: standardError.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-
-        guard process.terminationStatus == 0 else {
+        guard result.terminationStatus == 0 else {
             let details = stderr.isEmpty ? stdout : stderr
             throw VoicePowerError.transcriptionFailed(details: details.trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -67,6 +42,51 @@ struct WhisperTranscriber: Sendable {
         }
 
         return normalized
+    }
+
+    private func makeInvocation(audioFileURL: URL, outputBase: URL) throws -> (executableURL: URL, arguments: [String], environment: [String: String]) {
+        if config.usesLegacyCommand, let command = config.command, let arguments = config.arguments {
+            let commandPath = expand(
+                command,
+                audioPath: audioFileURL.path,
+                outputBase: outputBase.path
+            )
+
+            guard FileManager.default.isExecutableFile(atPath: commandPath) else {
+                throw VoicePowerError.transcriptionCommandNotExecutable(commandPath)
+            }
+
+            return (
+                executableURL: URL(fileURLWithPath: commandPath),
+                arguments: arguments.map { expand($0, audioPath: audioFileURL.path, outputBase: outputBase.path) },
+                environment: [:]
+            )
+        }
+
+        let runtimePythonURL = VoicePowerPaths.runtimePythonURL
+        guard FileManager.default.isExecutableFile(atPath: runtimePythonURL.path) else {
+            throw VoicePowerError.runtimeBootstrapFailed("VoicePower runtime is not ready yet")
+        }
+
+        let scriptURL = VoicePowerPaths.scriptURL(named: "mlx_whisper_transcribe.py")
+        return (
+            executableURL: runtimePythonURL,
+            arguments: [
+                scriptURL.path,
+                "--audio-path",
+                audioFileURL.path,
+                "--model",
+                config.resolvedModel,
+                "--language",
+                config.resolvedLanguage,
+                "--hf-home",
+                VoicePowerPaths.huggingFaceCacheURL.path,
+            ],
+            environment: [
+                "HF_HOME": VoicePowerPaths.huggingFaceCacheURL.path,
+                "TOKENIZERS_PARALLELISM": "false",
+            ]
+        )
     }
 
     private func expand(_ template: String, audioPath: String, outputBase: String) -> String {

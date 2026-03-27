@@ -70,7 +70,7 @@ final class VoiceTypingController {
     private let audioRecorder: AudioRecorder
     private let transcriber: WhisperTranscriber
     private let textNormalizer: TextNormalizer
-    private let textPolisher: OllamaTextPolisher
+    private let textPolisher: LocalCleanupPolisher
     private let textInjector: TextInjector
     private let permissions: PermissionCoordinator
     private let saveAudioFiles: Bool
@@ -85,7 +85,7 @@ final class VoiceTypingController {
         audioRecorder: AudioRecorder,
         transcriber: WhisperTranscriber,
         textNormalizer: TextNormalizer,
-        textPolisher: OllamaTextPolisher,
+        textPolisher: LocalCleanupPolisher,
         textInjector: TextInjector,
         permissions: PermissionCoordinator,
         saveAudioFiles: Bool

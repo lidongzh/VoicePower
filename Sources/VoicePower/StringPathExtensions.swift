@@ -15,4 +15,9 @@ extension String {
         escaped = escaped.replacingOccurrences(of: "\n", with: "\\n")
         return escaped
     }
+
+    func nonEmptyOr(_ fallback: String) -> String {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
 }

@@ -17,50 +17,48 @@ struct TextNormalizer: Sendable {
             return trimmed
         }
 
-        guard let command = config.command, let arguments = config.arguments, !arguments.isEmpty else {
-            return trimmed
-        }
+        let invocation = try makeInvocation()
+        let result = try ProcessRunner.run(
+            executableURL: invocation.executableURL,
+            arguments: invocation.arguments,
+            environment: invocation.environment,
+            standardInput: "\(trimmed)\n"
+        )
 
-        let commandPath = command.expandedTildePath
-        guard FileManager.default.isExecutableFile(atPath: commandPath) else {
-            throw VoicePowerError.transcriptionCommandNotExecutable(commandPath)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: commandPath)
-        process.arguments = arguments.map { $0.expandedTildePath }
-
-        let stdinPipe = Pipe()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardInput = stdinPipe
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-
-        if let inputData = "\(trimmed)\n".data(using: .utf8) {
-            stdinPipe.fileHandleForWriting.write(inputData)
-        }
-        try? stdinPipe.fileHandleForWriting.close()
-
-        process.waitUntilExit()
-
-        let stdout = String(
-            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let stderr = String(
-            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-
-        guard process.terminationStatus == 0 else {
-            let details = stderr.isEmpty ? stdout : stderr
+        guard result.terminationStatus == 0 else {
+            let details = result.standardError.isEmpty ? result.standardOutput : result.standardError
             throw VoicePowerError.textNormalizationFailed(details.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
-        let normalized = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? trimmed : normalized
+    }
+
+    private func makeInvocation() throws -> (executableURL: URL, arguments: [String], environment: [String: String]) {
+        if let command = config.command, let arguments = config.arguments, !arguments.isEmpty {
+            let commandPath = command.expandedTildePath
+            guard FileManager.default.isExecutableFile(atPath: commandPath) else {
+                throw VoicePowerError.transcriptionCommandNotExecutable(commandPath)
+            }
+
+            return (
+                executableURL: URL(fileURLWithPath: commandPath),
+                arguments: arguments.map { $0.expandedTildePath },
+                environment: [:]
+            )
+        }
+
+        let runtimePythonURL = VoicePowerPaths.runtimePythonURL
+        guard FileManager.default.isExecutableFile(atPath: runtimePythonURL.path) else {
+            throw VoicePowerError.runtimeBootstrapFailed("VoicePower runtime is not ready yet")
+        }
+
+        return (
+            executableURL: runtimePythonURL,
+            arguments: [
+                VoicePowerPaths.scriptURL(named: "simplify_chinese_text.py").path,
+            ],
+            environment: [:]
+        )
     }
 }

@@ -1,10 +1,15 @@
 import AVFoundation
+import AppKit
 import ApplicationServices
 import Foundation
 import CoreGraphics
 
 @MainActor
 final class PermissionCoordinator {
+    var hasInputMonitoringPermission: Bool {
+        CGPreflightListenEventAccess()
+    }
+
     func requestPermissionsIfNeeded() {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
@@ -33,5 +38,27 @@ final class PermissionCoordinator {
         guard CGPreflightListenEventAccess() else {
             throw VoicePowerError.inputMonitoringPermissionMissing
         }
+    }
+
+    func openInputMonitoringSettings() {
+        let candidateURLs = [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy",
+        ]
+
+        for candidate in candidateURLs {
+            guard let url = URL(string: candidate) else {
+                continue
+            }
+
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/System/Applications/System Settings.app"),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
     }
 }
