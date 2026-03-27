@@ -1,6 +1,6 @@
 # VoicePower
 
-VoicePower is a local macOS voice typing prototype for mixed English and Chinese dictation. It records audio from the microphone, runs a local `mlx-whisper` transcription command, optionally sends the raw transcript to a local small LLM for cleanup, normalizes the final text to simplified Chinese when configured, then pastes the result into the active application.
+VoicePower is a local macOS voice typing prototype for mixed English and Chinese dictation. It records audio from the microphone, bootstraps a local `mlx-whisper` runtime on first launch, optionally runs a local MLX cleanup model, normalizes the final text to simplified Chinese when configured, then pastes the result into the active application.
 
 This is intentionally closer to "push to talk and paste" than a full macOS Input Method Editor. For a first version, that tradeoff keeps the implementation small and local while still matching the workflow of tools like Typeless.
 
@@ -22,78 +22,89 @@ The app does four things:
 2. Registers a global right-`Command` hold-to-talk trigger.
 3. Records a mono WAV file locally.
 4. Queues recordings and processes them one at a time.
-5. Runs a local transcription command that you configure in JSON.
-6. Optionally calls a local Ollama endpoint to remove filler words and false starts.
-7. Optionally normalizes the final text to simplified Chinese.
+5. Runs a bundled local MLX Whisper worker.
+6. Optionally runs a bundled local MLX cleanup worker.
+7. Normalizes Chinese output to simplified Chinese.
 8. Pastes the result with `Cmd+V`.
-
-The transcription command is still template-based instead of hard-coded, so you can point it at the bundled `mlx-whisper` wrapper or any compatible local wrapper.
 
 ## Setup
 
-1. Copy [Configuration/voice-power.example.json](/Users/lidongzh/Documents/RESEARCH_CODE/DEV/voice_power/Configuration/voice-power.example.json) to `~/.voice-power/config.json`.
-2. Install the repo-local `mlx-whisper` environment:
+The new default flow is:
+
+1. Build the app:
 
 ```bash
-./scripts/install_mlx_whisper.sh
+./scripts/build_app.sh
 ```
 
-3. Edit the JSON so `transcription.command` points to your local Python executable inside the MLX virtualenv and the first transcription argument points at [scripts/mlx_whisper_transcribe.py](/Users/lidongzh/Documents/RESEARCH_CODE/DEV/voice_power/scripts/mlx_whisper_transcribe.py).
-   If you want guaranteed simplified Chinese output, also point `normalization.command` at the same Python executable and `normalization.arguments[0]` at [scripts/simplify_chinese_text.py](/Users/lidongzh/Documents/RESEARCH_CODE/DEV/voice_power/scripts/simplify_chinese_text.py).
-4. Optional: run a local Ollama server and pick a small instruct model for cleanup. Keep cleanup temperature low.
-5. Build the app:
+To build a GitHub-release style disk image instead:
 
 ```bash
-swift build
+./scripts/build_dmg.sh
 ```
 
-6. Run it:
+2. Open `dist/VoicePower.app` or distribute `dist/VoicePower.dmg`.
+3. Grant:
+   - Microphone permission
+   - Accessibility permission
+   - Input Monitoring permission if you want right-`Command` hold-to-talk
+4. Wait for the menu bar app to finish preparing the local runtime and Whisper model.
+5. Optional: turn `Cleanup: On` in the menu. The app will download the cleanup model on demand.
+
+If `~/.voice-power/config.json` does not exist yet, VoicePower creates it automatically on first launch using [Configuration/voice-power.example.json](/Users/lidongzh/Documents/RESEARCH_CODE/DEV/voice_power/Configuration/voice-power.example.json) as the shape.
+
+During development you can still run from Terminal:
 
 ```bash
 swift run VoicePower
 ```
 
-7. Grant:
-   - Microphone permission
-   - Accessibility permission
-
-The default toggle hotkey in the sample config is `Control + Option + Space`.
+The default toggle hotkey is `Control + Option + Space`.
 
 The app also supports hold-to-talk on the right `Command` key. Press and hold right `Command`, speak, then release it to stop and enqueue that dictation.
 
 If right `Command` does nothing, grant Input Monitoring permission to the current VoicePower app bundle in `System Settings > Privacy & Security > Input Monitoring`.
 
-If you want a standalone app bundle instead of running from Terminal:
-
-```bash
-./scripts/build_app.sh
-open dist/VoicePower.app
-```
-
 During development, rebuilds replace the app bundle. Re-add Accessibility permission after switching to a newly built unsigned local app if macOS stops trusting the previous grant.
 
-The menu bar app also exposes `Cleanup: On/Off` and `Save Audio: On/Off` toggles. Those settings are written back to the active config file so you do not need to edit JSON by hand.
+The menu bar app exposes these toggles directly:
+
+- `Settings…`
+- `Cleanup: On/Off`
+- `Auto Punctuation: On/Off`
+- `Save Audio: On/Off`
+- `Prepare Runtime`
+
+The `Settings…` window lets you choose:
+
+- Whisper model
+- Cleanup model
+- Cleanup on/off
+- Auto punctuation on/off
+- Save recorded audio on/off
+
+Cleanup does not require Ollama anymore. The app runs cleanup locally through its app-managed MLX runtime.
 
 If you start a second recording while a previous one is still being transcribed or cleaned, VoicePower now processes the recordings in FIFO order instead of letting them race each other.
 
 ## Recommended cleanup models
 
-If you enable cleanup, pick a small bilingual instruct model and keep the prompt strict:
+The default cleanup worker is tuned for:
 
-- Preserve meaning.
-- Do not translate.
-- Remove filler words and false starts only when safe.
-- Return only the cleaned text.
-
-Qwen-family small instruct models are a reasonable fit for mixed English and Chinese cleanup because they handle both languages well enough for this narrow post-processing task.
+- preserve meaning
+- preserve mixed English and Chinese
+- never translate
+- only convert Chinese output to simplified Chinese
+- optionally add punctuation safely
 
 ## Current limitations
 
 - Text insertion is paste-based, so clipboard restore is best-effort for plain text only.
-- The first `mlx-whisper` run will be slower because the model may need to download into the local cache.
+- First launch is slower because the app may need to create its local Python runtime and download models.
 - Right-`Command` hold-to-talk depends on Input Monitoring permission in addition to Microphone and Accessibility.
 - This is not a true IME yet. It is a global dictation helper.
 - No VAD or streaming transcription yet.
+- The embedded cleanup backend uses `mlx-lm`, so behavior still depends on which small model you configure.
 
 ## Next steps
 
@@ -101,5 +112,5 @@ Likely improvements after this first pass:
 
 - Streaming transcription.
 - Better clipboard preservation.
-- Packaged `.app` bundle and signed permissions flow.
-- Direct `llama.cpp` or MLX cleanup backend in addition to Ollama.
+- Signed / notarized distribution.
+- Better setup UX than menu-only status lines.
