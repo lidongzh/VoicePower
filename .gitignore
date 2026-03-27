@@ -1,0 +1,8 @@
+.DS_Store
+.cache/
+.build/
+.home/
+.venv-mlx-whisper/
+dist/
+Package.resolved
+Configuration/voice-power.local.json
