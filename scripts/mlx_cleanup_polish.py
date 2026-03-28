@@ -113,6 +113,10 @@ def generate_text(
     enable_punctuation: bool,
 ) -> str:
     from mlx_lm import generate, load
+    try:
+        from mlx_lm.sample_utils import make_sampler
+    except ImportError:
+        make_sampler = None
 
     model, tokenizer = load(model_path_or_repo)
     system_prompt, user_prompt = build_prompt(raw_text, system_prompt, user_prompt_template, enable_punctuation)
@@ -136,14 +140,41 @@ def generate_text(
         else:
             prompt = tokenizer.apply_chat_template(messages, **apply_kwargs)
 
-    response = generate(
-        model,
-        tokenizer,
-        prompt=prompt,
-        verbose=False,
-        max_tokens=max_tokens,
-        temp=temperature,
-    )
+    generate_kwargs = {
+        "prompt": prompt,
+        "verbose": False,
+        "max_tokens": max_tokens,
+    }
+
+    last_error = None
+
+    if make_sampler is not None:
+        try:
+            response = generate(
+                model,
+                tokenizer,
+                sampler=make_sampler(temp=temperature),
+                **generate_kwargs,
+            )
+            return str(response).strip()
+        except TypeError as error:
+            last_error = error
+
+    for temperature_argument in ("temperature", "temp"):
+        try:
+            response = generate(
+                model,
+                tokenizer,
+                **{temperature_argument: temperature},
+                **generate_kwargs,
+            )
+            return str(response).strip()
+        except TypeError as error:
+            last_error = error
+
+    if last_error is not None:
+        raise last_error
+
     return str(response).strip()
 
 

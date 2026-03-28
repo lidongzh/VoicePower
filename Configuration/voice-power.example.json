@@ -24,6 +24,17 @@
     "temperature": 0.0,
     "autoPunctuation": true
   },
+  "vocabulary": {
+    "enabled": true,
+    "entries": [
+      {
+        "target": "GitHub",
+        "aliases": ["git hub", "githup"],
+        "caseSensitive": false,
+        "matchWholeWords": true
+      }
+    ]
+  },
   "insertion": {
     "restoreClipboard": true
   }

@@ -10,6 +10,8 @@
     <string>local.voicepower.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>VoicePower.icns</string>
     <key>CFBundleName</key>
     <string>VoicePower</string>
     <key>CFBundlePackageType</key>
@@ -26,4 +28,3 @@
     <string>VoicePower records your speech locally so it can transcribe and type text into other apps.</string>
 </dict>
 </plist>
-

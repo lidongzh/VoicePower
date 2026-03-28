@@ -13,6 +13,7 @@ final class StatusMenuController: NSObject {
     private let menu = NSMenu()
     private let statusLineItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
     private let runtimeLineItem = NSMenuItem(title: "Runtime: Pending", action: nil, keyEquivalent: "")
+    private let workerLineItem = NSMenuItem(title: "Worker: Pending", action: nil, keyEquivalent: "")
     private let whisperModelLineItem = NSMenuItem(title: "Whisper Model: Pending", action: nil, keyEquivalent: "")
     private let cleanupModelLineItem = NSMenuItem(title: "Cleanup Model: Optional", action: nil, keyEquivalent: "")
     private let holdToTalkPermissionLineItem = NSMenuItem(title: "Hold-to-talk: Ready", action: nil, keyEquivalent: "")
@@ -23,6 +24,7 @@ final class StatusMenuController: NSObject {
     private lazy var reloadItem = NSMenuItem(title: "Reload Config", action: #selector(handleReload), keyEquivalent: "r")
     private lazy var quitItem = NSMenuItem(title: "Quit", action: #selector(handleQuit), keyEquivalent: "q")
     private let configPathItem = NSMenuItem(title: "Config: -", action: nil, keyEquivalent: "")
+    private let statusItemImage = StatusMenuController.loadStatusItemImage()
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -37,6 +39,7 @@ final class StatusMenuController: NSObject {
 
         menu.addItem(statusLineItem)
         menu.addItem(runtimeLineItem)
+        menu.addItem(workerLineItem)
         menu.addItem(whisperModelLineItem)
         menu.addItem(cleanupModelLineItem)
         menu.addItem(holdToTalkPermissionLineItem)
@@ -51,7 +54,7 @@ final class StatusMenuController: NSObject {
         menu.addItem(.separator())
         menu.addItem(quitItem)
 
-        statusItem.button?.title = "VP"
+        updateStatusButton(shortTitle: "VP", statusText: "Idle")
         statusItem.menu = menu
     }
 
@@ -68,7 +71,36 @@ final class StatusMenuController: NSObject {
         statusLineItem.title = "Status: \(state.statusText)"
         toggleItem.title = state.toggleTitle
         toggleItem.isEnabled = state.toggleEnabled
-        statusItem.button?.title = state.shortTitle
+        updateStatusButton(shortTitle: state.shortTitle, statusText: state.statusText)
+    }
+
+    private static func loadStatusItemImage() -> NSImage? {
+        let image =
+            Bundle.main.url(forResource: "VoicePower", withExtension: "icns")
+                .flatMap(NSImage.init(contentsOf:))
+            ?? (NSApplication.shared.applicationIconImage.copy() as? NSImage)
+
+        image?.size = NSSize(width: 18, height: 18)
+        image?.isTemplate = false
+        return image
+    }
+
+    private func updateStatusButton(shortTitle: String, statusText: String) {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        if let statusItemImage {
+            button.image = statusItemImage
+            button.imageScaling = .scaleProportionallyDown
+            button.imagePosition = shortTitle == "VP" ? .imageOnly : .imageLeft
+            button.title = shortTitle == "VP" ? "" : shortTitle
+        } else {
+            button.image = nil
+            button.title = shortTitle
+        }
+
+        button.toolTip = "VoicePower: \(statusText)"
     }
 
     func setRuntimeStatus(_ value: String) {
@@ -77,6 +109,10 @@ final class StatusMenuController: NSObject {
 
     func setWhisperModelStatus(_ value: String) {
         whisperModelLineItem.title = "Whisper Model: \(value)"
+    }
+
+    func setWorkerStatus(_ value: String) {
+        workerLineItem.title = "Worker: \(value)"
     }
 
     func setCleanupModelStatus(_ value: String) {

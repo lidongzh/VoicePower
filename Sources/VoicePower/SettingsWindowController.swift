@@ -5,6 +5,35 @@ struct ModelOption: Equatable {
     let title: String
 }
 
+@MainActor
+private final class VocabularyMappingRow {
+    let containerView = NSStackView()
+    let targetField = NSTextField()
+    let aliasesField = NSTextField()
+    let removeButton = NSButton(title: "Remove", target: nil, action: nil)
+
+    init(target: String, aliases: String) {
+        targetField.translatesAutoresizingMaskIntoConstraints = false
+        targetField.stringValue = target
+        targetField.placeholderString = "Target phrase"
+        targetField.widthAnchor.constraint(equalToConstant: 150).isActive = true
+
+        aliasesField.translatesAutoresizingMaskIntoConstraints = false
+        aliasesField.stringValue = aliases
+        aliasesField.placeholderString = "alias one | alias two"
+        aliasesField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+
+        removeButton.bezelStyle = .rounded
+
+        containerView.orientation = .horizontal
+        containerView.alignment = .centerY
+        containerView.spacing = 8
+        containerView.addArrangedSubview(targetField)
+        containerView.addArrangedSubview(aliasesField)
+        containerView.addArrangedSubview(removeButton)
+    }
+}
+
 enum VoicePowerModelCatalog {
     static let whisperOptions: [ModelOption] = [
         ModelOption(id: "mlx-community/whisper-large-v3-turbo", title: "Whisper Large v3 Turbo"),
@@ -36,6 +65,7 @@ final class SettingsWindowController: NSWindowController {
     var onCleanupEnabledChange: ((Bool) -> Void)?
     var onAutoPunctuationChange: ((Bool) -> Void)?
     var onSaveAudioChange: ((Bool) -> Void)?
+    var onVocabularySave: ((Bool, String) -> Void)?
     var onPrepareRuntime: (() -> Void)?
 
     private let whisperModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -43,19 +73,26 @@ final class SettingsWindowController: NSWindowController {
     private let cleanupEnabledCheckbox = NSButton(checkboxWithTitle: "Enable cleanup", target: nil, action: nil)
     private let autoPunctuationCheckbox = NSButton(checkboxWithTitle: "Auto punctuation", target: nil, action: nil)
     private let saveAudioCheckbox = NSButton(checkboxWithTitle: "Save recorded audio files", target: nil, action: nil)
+    private let vocabularyEnabledCheckbox = NSButton(checkboxWithTitle: "Enable vocabulary corrections", target: nil, action: nil)
     private let runtimeStatusLabel = NSTextField(labelWithString: "Runtime: Pending")
+    private let workerStatusLabel = NSTextField(labelWithString: "Worker: Pending")
     private let whisperStatusLabel = NSTextField(labelWithString: "Whisper model: Pending Download")
     private let cleanupStatusLabel = NSTextField(labelWithString: "Cleanup model: Optional")
     private let setupNoteLabel = NSTextField(labelWithString: "Changing models updates the app config immediately. Use “Download Selected Models” to prefetch the selected models.")
+    private let vocabularyNoteLabel = NSTextField(labelWithString: "Vocabulary entries stay on this Mac only. Add one mapping per row. Use | between aliases.")
+    private let addVocabularyButton = NSButton(title: "Add Mapping", target: nil, action: nil)
     private let downloadButton = NSButton(title: "Download Selected Models", target: nil, action: nil)
+    private let saveVocabularyButton = NSButton(title: "Save Vocabulary", target: nil, action: nil)
     private let downloadProgressIndicator = NSProgressIndicator()
+    private let vocabularyRowsStack = NSStackView()
 
     private var whisperOptions: [ModelOption] = VoicePowerModelCatalog.whisperOptions
     private var cleanupOptions: [ModelOption] = VoicePowerModelCatalog.cleanupOptions
+    private var vocabularyRows: [VocabularyMappingRow] = []
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -97,6 +134,8 @@ final class SettingsWindowController: NSWindowController {
         cleanupEnabledCheckbox.state = config.cleanupEnabled ? .on : .off
         autoPunctuationCheckbox.state = config.resolvedCleanup.autoPunctuationEnabled ? .on : .off
         saveAudioCheckbox.state = config.saveAudioFilesEnabled ? .on : .off
+        vocabularyEnabledCheckbox.state = config.resolvedVocabulary.enabled ? .on : .off
+        setVocabularyRows(from: config.resolvedVocabulary.entries)
         cleanupStatusLabel.stringValue = config.cleanupEnabled ? cleanupStatusLabel.stringValue : "Cleanup model: Optional"
     }
 
@@ -106,6 +145,10 @@ final class SettingsWindowController: NSWindowController {
 
     func setWhisperModelStatus(_ value: String) {
         whisperStatusLabel.stringValue = "Whisper model: \(value)"
+    }
+
+    func setWorkerStatus(_ value: String) {
+        workerStatusLabel.stringValue = "Worker: \(value)"
     }
 
     func setCleanupModelStatus(_ value: String) {
@@ -128,13 +171,22 @@ final class SettingsWindowController: NSWindowController {
 
         setupNoteLabel.lineBreakMode = .byWordWrapping
         setupNoteLabel.maximumNumberOfLines = 0
+        vocabularyNoteLabel.lineBreakMode = .byWordWrapping
+        vocabularyNoteLabel.maximumNumberOfLines = 0
         setupNoteLabel.textColor = .secondaryLabelColor
+        vocabularyNoteLabel.textColor = .secondaryLabelColor
         runtimeStatusLabel.textColor = .secondaryLabelColor
+        workerStatusLabel.textColor = .secondaryLabelColor
         whisperStatusLabel.textColor = .secondaryLabelColor
         cleanupStatusLabel.textColor = .secondaryLabelColor
         downloadProgressIndicator.style = .spinning
         downloadProgressIndicator.controlSize = .small
         downloadProgressIndicator.isDisplayedWhenStopped = false
+        vocabularyRowsStack.orientation = .vertical
+        vocabularyRowsStack.alignment = .leading
+        vocabularyRowsStack.spacing = 8
+        vocabularyRowsStack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        setVocabularyRows(from: [])
 
         whisperModelPopup.target = self
         whisperModelPopup.action = #selector(handleWhisperModelChanged)
@@ -147,6 +199,10 @@ final class SettingsWindowController: NSWindowController {
         autoPunctuationCheckbox.action = #selector(handleAutoPunctuationChanged)
         saveAudioCheckbox.target = self
         saveAudioCheckbox.action = #selector(handleSaveAudioChanged)
+        addVocabularyButton.target = self
+        addVocabularyButton.action = #selector(handleAddVocabularyRow)
+        saveVocabularyButton.target = self
+        saveVocabularyButton.action = #selector(handleSaveVocabulary)
         downloadButton.target = self
         downloadButton.action = #selector(handlePrepareRuntime)
 
@@ -157,6 +213,7 @@ final class SettingsWindowController: NSWindowController {
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         stack.addArrangedSubview(runtimeStatusLabel)
+        stack.addArrangedSubview(workerStatusLabel)
         stack.addArrangedSubview(whisperStatusLabel)
         stack.addArrangedSubview(cleanupStatusLabel)
         stack.addArrangedSubview(makeLabeledRow(label: "Whisper model", control: whisperModelPopup))
@@ -166,6 +223,11 @@ final class SettingsWindowController: NSWindowController {
         stack.addArrangedSubview(saveAudioCheckbox)
         stack.addArrangedSubview(setupNoteLabel)
         stack.addArrangedSubview(makeDownloadRow())
+        stack.addArrangedSubview(makeSeparator())
+        stack.addArrangedSubview(vocabularyEnabledCheckbox)
+        stack.addArrangedSubview(vocabularyNoteLabel)
+        stack.addArrangedSubview(makeVocabularyEditor())
+        stack.addArrangedSubview(makeVocabularyButtonRow())
 
         contentView.addSubview(stack)
 
@@ -173,7 +235,7 @@ final class SettingsWindowController: NSWindowController {
             stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
             whisperModelPopup.widthAnchor.constraint(equalToConstant: 290),
             cleanupModelPopup.widthAnchor.constraint(equalToConstant: 290),
         ])
@@ -198,12 +260,90 @@ final class SettingsWindowController: NSWindowController {
         return row
     }
 
+    private func makeVocabularyEditor() -> NSView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = vocabularyRowsStack
+        scrollView.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        return scrollView
+    }
+
+    private func makeVocabularyButtonRow() -> NSView {
+        let row = NSStackView(views: [addVocabularyButton, saveVocabularyButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        return row
+    }
+
+    private func makeSeparator() -> NSView {
+        let separator = NSBox()
+        separator.boxType = .separator
+        return separator
+    }
+
     private func repopulate(_ popup: NSPopUpButton, with options: [ModelOption], selectedID: String) {
         popup.removeAllItems()
         popup.addItems(withTitles: options.map(\.title))
         if let index = options.firstIndex(where: { $0.id == selectedID }) {
             popup.selectItem(at: index)
         }
+    }
+
+    private func setVocabularyRows(from entries: [VocabularyEntry]) {
+        vocabularyRows.forEach { row in
+            vocabularyRowsStack.removeArrangedSubview(row.containerView)
+            row.containerView.removeFromSuperview()
+        }
+        vocabularyRows.removeAll()
+
+        if entries.isEmpty {
+            appendVocabularyRow()
+        } else {
+            entries.forEach { entry in
+                appendVocabularyRow(
+                    target: entry.resolvedTarget,
+                    aliases: entry.resolvedAliases.joined(separator: " | ")
+                )
+            }
+        }
+
+        updateVocabularyRowsLayout()
+    }
+
+    private func appendVocabularyRow(target: String = "", aliases: String = "") {
+        let row = VocabularyMappingRow(target: target, aliases: aliases)
+        row.removeButton.target = self
+        row.removeButton.action = #selector(handleRemoveVocabularyRow(_:))
+        vocabularyRows.append(row)
+        vocabularyRowsStack.addArrangedSubview(row.containerView)
+        updateVocabularyRowsLayout()
+    }
+
+    private func updateVocabularyRowsLayout() {
+        let width: CGFloat = 500
+        let height = max(vocabularyRowsStack.fittingSize.height, 1)
+        vocabularyRowsStack.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    private func vocabularyRawText() -> String {
+        vocabularyRows
+            .compactMap { row in
+                let target = row.targetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let aliases = row.aliasesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                guard !target.isEmpty || !aliases.isEmpty else {
+                    return nil
+                }
+
+                return "\(target) => \(aliases)"
+            }
+            .joined(separator: "\n")
     }
 
     @objc private func handleWhisperModelChanged() {
@@ -234,6 +374,31 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func handleSaveAudioChanged() {
         onSaveAudioChange?(saveAudioCheckbox.state == .on)
+    }
+
+    @objc private func handleAddVocabularyRow() {
+        appendVocabularyRow()
+    }
+
+    @objc private func handleRemoveVocabularyRow(_ sender: NSButton) {
+        guard let index = vocabularyRows.firstIndex(where: { $0.removeButton === sender }) else {
+            return
+        }
+
+        if vocabularyRows.count == 1 {
+            vocabularyRows[index].targetField.stringValue = ""
+            vocabularyRows[index].aliasesField.stringValue = ""
+            return
+        }
+
+        let row = vocabularyRows.remove(at: index)
+        vocabularyRowsStack.removeArrangedSubview(row.containerView)
+        row.containerView.removeFromSuperview()
+        updateVocabularyRowsLayout()
+    }
+
+    @objc private func handleSaveVocabulary() {
+        onVocabularySave?(vocabularyEnabledCheckbox.state == .on, vocabularyRawText())
     }
 
     @objc private func handlePrepareRuntime() {

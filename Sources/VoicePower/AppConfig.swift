@@ -9,6 +9,7 @@ struct AppConfig: Codable, Sendable {
     let transcription: TranscriptionConfig
     let normalization: TextNormalizationConfig?
     let cleanup: CleanupConfig?
+    let vocabulary: VocabularyConfig?
     let insertion: InsertionConfig
 
     var recordingsDirectoryURL: URL {
@@ -40,6 +41,10 @@ struct AppConfig: Codable, Sendable {
         (cleanup ?? .defaultConfig).withDefaults()
     }
 
+    var resolvedVocabulary: VocabularyConfig {
+        (vocabulary ?? .defaultConfig).withDefaults()
+    }
+
     var needsManagedRuntimeMigration: Bool {
         resolvedTranscription.looksLikeLegacyManagedRuntime
             || resolvedNormalization.looksLikeLegacyManagedRuntime
@@ -59,6 +64,7 @@ struct AppConfig: Codable, Sendable {
             transcription: resolvedTranscription.migratedToManagedRuntime(),
             normalization: resolvedNormalization.migratedToManagedRuntime(),
             cleanup: resolvedCleanup.migratedToManagedRuntime(),
+            vocabulary: resolvedVocabulary,
             insertion: insertion
         )
     }
@@ -72,6 +78,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: resolvedCleanup.refreshingPromptDefaults(),
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -88,6 +95,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: nextCleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -104,6 +112,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: nextCleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -120,6 +129,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: cleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -135,6 +145,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: nextCleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -150,6 +161,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: nextCleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -165,6 +177,7 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: cleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -180,6 +193,7 @@ struct AppConfig: Codable, Sendable {
             transcription: nextTranscription,
             normalization: normalization,
             cleanup: cleanup,
+            vocabulary: vocabulary,
             insertion: insertion
         )
     }
@@ -195,6 +209,21 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: nextCleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func settingVocabulary(_ vocabulary: VocabularyConfig) -> AppConfig {
+        AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary.withDefaults(),
             insertion: insertion
         )
     }
@@ -501,6 +530,52 @@ struct CleanupConfig: Codable, Sendable {
     static let defaultModel = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
 }
 
+struct VocabularyConfig: Codable, Sendable {
+    let enabled: Bool
+    let entries: [VocabularyEntry]
+
+    func withEnabled(_ enabled: Bool) -> VocabularyConfig {
+        VocabularyConfig(enabled: enabled, entries: entries)
+    }
+
+    func withEntries(_ entries: [VocabularyEntry]) -> VocabularyConfig {
+        VocabularyConfig(enabled: enabled, entries: entries)
+    }
+
+    func withDefaults() -> VocabularyConfig {
+        VocabularyConfig(
+            enabled: enabled,
+            entries: entries.filter { !$0.target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+    }
+
+    static let defaultConfig = VocabularyConfig(
+        enabled: true,
+        entries: []
+    )
+}
+
+struct VocabularyEntry: Codable, Sendable {
+    let target: String
+    let aliases: [String]
+    let caseSensitive: Bool?
+    let matchWholeWords: Bool?
+
+    var resolvedTarget: String {
+        target.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var resolvedAliases: [String] {
+        aliases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    var resolvedCaseSensitive: Bool {
+        caseSensitive ?? false
+    }
+}
+
 struct InsertionConfig: Codable, Sendable {
     let restoreClipboard: Bool
 }
@@ -608,6 +683,17 @@ enum AppConfigLoader {
         "autoPunctuation": true,
         "systemPrompt": "\(CleanupPromptDefaults.escapedSystemPrompt)",
         "userPromptTemplate": "\(CleanupPromptDefaults.escapedUserPromptTemplate)"
+      },
+      "vocabulary": {
+        "enabled": true,
+        "entries": [
+          {
+            "target": "GitHub",
+            "aliases": ["git hub", "githup"],
+            "caseSensitive": false,
+            "matchWholeWords": true
+          }
+        ]
       },
       "insertion": {
         "restoreClipboard": true

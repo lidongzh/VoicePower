@@ -69,6 +69,7 @@ final class VoiceTypingController {
 
     private let audioRecorder: AudioRecorder
     private let transcriber: WhisperTranscriber
+    private let vocabularyCorrector: VocabularyCorrector
     private let textNormalizer: TextNormalizer
     private let textPolisher: LocalCleanupPolisher
     private let textInjector: TextInjector
@@ -84,6 +85,7 @@ final class VoiceTypingController {
     init(
         audioRecorder: AudioRecorder,
         transcriber: WhisperTranscriber,
+        vocabularyCorrector: VocabularyCorrector,
         textNormalizer: TextNormalizer,
         textPolisher: LocalCleanupPolisher,
         textInjector: TextInjector,
@@ -92,6 +94,7 @@ final class VoiceTypingController {
     ) {
         self.audioRecorder = audioRecorder
         self.transcriber = transcriber
+        self.vocabularyCorrector = vocabularyCorrector
         self.textNormalizer = textNormalizer
         self.textPolisher = textPolisher
         self.textInjector = textInjector
@@ -187,6 +190,7 @@ final class VoiceTypingController {
         emitState()
 
         let transcriber = transcriber
+        let vocabularyCorrector = vocabularyCorrector
         let textNormalizer = textNormalizer
         let textPolisher = textPolisher
         let textInjector = textInjector
@@ -197,10 +201,12 @@ final class VoiceTypingController {
 
             do {
                 let rawTranscript = try await Task.detached(priority: .userInitiated) {
-                    try transcriber.transcribe(audioFileURL: nextRecording.recordingURL)
+                    try await transcriber.transcribe(audioFileURL: nextRecording.recordingURL)
                 }.value
-                let polishedText = try await textPolisher.polish(rawTranscript)
-                let normalizedText = try textNormalizer.normalize(polishedText)
+                let correctedTranscript = vocabularyCorrector.correct(rawTranscript)
+                let polishedText = try await textPolisher.polish(correctedTranscript)
+                let finalizedText = vocabularyCorrector.correct(polishedText)
+                let normalizedText = try textNormalizer.normalize(finalizedText)
                 try textInjector.insert(text: normalizedText, targeting: nextRecording.targetApplication)
                 result = .success(())
             } catch {

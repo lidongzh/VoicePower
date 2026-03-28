@@ -4,6 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let permissions = PermissionCoordinator()
     private let runtimeBootstrapper = RuntimeBootstrapper()
+    private let inferenceWorker = InferenceWorkerManager()
     private var statusMenuController: StatusMenuController?
     private var settingsWindowController: SettingsWindowController?
     private var voiceTypingController: VoiceTypingController?
@@ -16,8 +17,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasPresentedInputMonitoringReminder = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Task {
+            await inferenceWorker.setStatusHandler { [weak self] state in
+                Task { @MainActor in
+                    self?.applyWorkerStatus(state.statusText)
+                }
+            }
+        }
         permissions.requestPermissionsIfNeeded()
         configureApplication()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Task {
+            await inferenceWorker.shutdown()
+        }
     }
 
     private func configureApplication() {
@@ -58,13 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentConfigURL = configURL
 
             let audioRecorder = try AudioRecorder(recordingsDirectory: config.recordingsDirectoryURL)
-            let transcriber = WhisperTranscriber(config: config.resolvedTranscription)
+            let transcriber = WhisperTranscriber(config: config.resolvedTranscription, workerManager: inferenceWorker)
+            let vocabularyCorrector = VocabularyCorrector(config: config.resolvedVocabulary)
             let textNormalizer = TextNormalizer(config: config.resolvedNormalization)
-            let textPolisher = LocalCleanupPolisher(config: config.resolvedCleanup)
+            let textPolisher = LocalCleanupPolisher(config: config.resolvedCleanup, workerManager: inferenceWorker)
             let textInjector = TextInjector(restoreClipboard: config.insertion.restoreClipboard)
             let voiceTypingController = VoiceTypingController(
                 audioRecorder: audioRecorder,
                 transcriber: transcriber,
+                vocabularyCorrector: vocabularyCorrector,
                 textNormalizer: textNormalizer,
                 textPolisher: textPolisher,
                 textInjector: textInjector,
@@ -159,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await MainActor.run {
                 updateHoldToTalkPermissionStatus(using: config)
                 let runtimeStatus = snapshot.baseRuntimeReady ? "Ready" : "Needs Setup"
+                let workerStatus = snapshot.baseRuntimeReady ? "Pending" : "Needs Runtime"
                 let whisperStatus = snapshot.whisperModelReady ? "Ready" : "Pending Download"
                 let cleanupStatus: String
                 if config.cleanupEnabled {
@@ -168,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 applyRuntimeStatuses(
                     runtime: runtimeStatus,
+                    worker: workerStatus,
                     whisper: whisperStatus,
                     cleanup: cleanupStatus,
                     isPreparing: false
@@ -210,20 +228,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onSaveAudioChange = { [weak self] enabled in
             self?.setSaveAudioEnabled(enabled)
         }
+        controller.onVocabularySave = { [weak self] enabled, rawText in
+            self?.setVocabulary(enabled: enabled, rawText: rawText)
+        }
         controller.onPrepareRuntime = { [weak self] in
             self?.prepareRuntimeIfNeeded(includeCleanupModel: self?.currentConfig?.cleanupEnabled == true)
         }
         settingsWindowController = controller
     }
 
-    private func applyRuntimeStatuses(runtime: String, whisper: String, cleanup: String, isPreparing: Bool) {
+    private func applyRuntimeStatuses(runtime: String, worker: String, whisper: String, cleanup: String, isPreparing: Bool) {
         statusMenuController?.setRuntimeStatus(runtime)
+        statusMenuController?.setWorkerStatus(worker)
         statusMenuController?.setWhisperModelStatus(whisper)
         statusMenuController?.setCleanupModelStatus(cleanup)
         settingsWindowController?.setRuntimeStatus(runtime)
+        settingsWindowController?.setWorkerStatus(worker)
         settingsWindowController?.setWhisperModelStatus(whisper)
         settingsWindowController?.setCleanupModelStatus(cleanup)
         settingsWindowController?.setRuntimePreparationInProgress(isPreparing)
+    }
+
+    private func applyWorkerStatus(_ status: String) {
+        statusMenuController?.setWorkerStatus(status)
+        settingsWindowController?.setWorkerStatus(status)
     }
 
     private func showSettingsWindow() {
@@ -251,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     applyRuntimeStatuses(
                         runtime: "Preparing",
+                        worker: "Pending",
                         whisper: "Downloading",
                         cleanup: includeCleanupModel ? "Pending Download" : "Optional",
                         isPreparing: true
@@ -262,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     applyRuntimeStatuses(
                         runtime: "Ready",
+                        worker: "Pending",
                         whisper: "Ready",
                         cleanup: includeCleanupModel ? "Downloading" : "Optional",
                         isPreparing: includeCleanupModel
@@ -272,29 +302,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await MainActor.run {
                         applyRuntimeStatuses(
                             runtime: "Ready",
+                            worker: "Pending",
                             whisper: "Ready",
                             cleanup: "Downloading",
                             isPreparing: true
                         )
                     }
                     try await runtimeBootstrapper.ensureCleanupModelReady(config.resolvedCleanup.resolvedModel)
-                    await MainActor.run {
-                        applyRuntimeStatuses(
-                            runtime: "Ready",
-                            whisper: "Ready",
-                            cleanup: "Ready",
-                            isPreparing: false
-                        )
-                    }
                 } else {
                     await MainActor.run {
                         applyRuntimeStatuses(
                             runtime: "Ready",
+                            worker: "Pending",
                             whisper: "Ready",
                             cleanup: "Optional",
-                            isPreparing: false
+                            isPreparing: true
                         )
                     }
+                }
+
+                await MainActor.run {
+                    applyWorkerStatus("Warming")
+                }
+                try await inferenceWorker.prepare(for: config)
+
+                await MainActor.run {
+                    applyRuntimeStatuses(
+                        runtime: "Ready",
+                        worker: "Ready",
+                        whisper: "Ready",
+                        cleanup: includeCleanupModel ? "Ready" : "Optional",
+                        isPreparing: false
+                    )
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -305,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     applyRuntimeStatuses(
                         runtime: "Error",
+                        worker: "Error",
                         whisper: "Retry Needed",
                         cleanup: includeCleanupModel ? "Retry Needed" : "Optional",
                         isPreparing: false
@@ -456,6 +496,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             errorPrefix: "Failed to update save-audio setting",
             prepareRuntime: false
         )
+    }
+
+    private func setVocabulary(enabled: Bool, rawText: String) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        do {
+            let entries = try parseVocabularyEntries(from: rawText)
+            let updatedVocabulary = currentConfig.resolvedVocabulary
+                .withEnabled(enabled)
+                .withEntries(entries)
+
+            persistUpdatedConfig(
+                currentConfig.settingVocabulary(updatedVocabulary),
+                to: currentConfigURL,
+                errorPrefix: "Failed to update vocabulary",
+                prepareRuntime: false
+            )
+        } catch {
+            presentRuntimeAlert(message: "Failed to update vocabulary: \(error.localizedDescription)")
+        }
+    }
+
+    private func parseVocabularyEntries(from rawText: String) throws -> [VocabularyEntry] {
+        let lines = rawText.components(separatedBy: .newlines)
+        var entries: [VocabularyEntry] = []
+
+        for (index, originalLine) in lines.enumerated() {
+            let line = originalLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                continue
+            }
+
+            let parts = line.components(separatedBy: "=>")
+            guard parts.count == 2 else {
+                throw VoicePowerError.invalidConfig(reason:
+                    "Vocabulary line \(index + 1) must use the format: Target => alias one | alias two"
+                )
+            }
+
+            let target = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let aliases = parts[1]
+                .components(separatedBy: "|")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            guard !target.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "Vocabulary line \(index + 1) is missing the target phrase")
+            }
+
+            guard !aliases.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "Vocabulary line \(index + 1) needs at least one alias")
+            }
+
+            entries.append(
+                VocabularyEntry(
+                    target: target,
+                    aliases: aliases,
+                    caseSensitive: false,
+                    matchWholeWords: nil
+                )
+            )
+        }
+
+        return entries
     }
 
     private func persistUpdatedConfig(_ updatedConfig: AppConfig, to url: URL, errorPrefix: String, prepareRuntime: Bool) {

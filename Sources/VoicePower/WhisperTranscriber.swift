@@ -2,12 +2,28 @@ import Foundation
 
 struct WhisperTranscriber: Sendable {
     private let config: TranscriptionConfig
+    private let workerManager: InferenceWorkerManager
 
-    init(config: TranscriptionConfig) {
+    init(config: TranscriptionConfig, workerManager: InferenceWorkerManager) {
         self.config = config.withDefaults()
+        self.workerManager = workerManager
     }
 
-    func transcribe(audioFileURL: URL) throws -> String {
+    func transcribe(audioFileURL: URL) async throws -> String {
+        if !config.usesLegacyCommand {
+            let transcript = try await workerManager.transcribe(audioFileURL: audioFileURL, config: config)
+            let normalized = Self.normalize(transcript)
+            guard !normalized.isEmpty else {
+                throw VoicePowerError.emptyTranscript
+            }
+
+            return normalized
+        }
+
+        return try transcribeWithLegacyCommand(audioFileURL: audioFileURL)
+    }
+
+    private func transcribeWithLegacyCommand(audioFileURL: URL) throws -> String {
         let fileManager = FileManager.default
         let outputDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
