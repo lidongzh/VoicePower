@@ -11,12 +11,15 @@ enum VoicePowerError: LocalizedError {
     case microphonePermissionMissing
     case accessibilityPermissionMissing
     case inputMonitoringPermissionMissing
+    case keychainOperationFailed(operation: String, details: String)
     case recordingAlreadyInProgress
     case recordingNotInProgress
     case recordingFailedToStart(reason: String)
     case transcriptionCommandNotExecutable(String)
     case transcriptionFailed(details: String)
     case emptyTranscript
+    case missingGroqAPIKey
+    case groqRequestFailed(String)
     case invalidCleanupEndpoint(String)
     case cleanupRequestFailed(String)
     case textNormalizationFailed(String)
@@ -44,6 +47,8 @@ enum VoicePowerError: LocalizedError {
             return "Accessibility permission is missing"
         case .inputMonitoringPermissionMissing:
             return "Input Monitoring permission is missing"
+        case let .keychainOperationFailed(operation, details):
+            return "Keychain error while trying to \(operation): \(details)"
         case .recordingAlreadyInProgress:
             return "Recording is already in progress"
         case .recordingNotInProgress:
@@ -56,6 +61,10 @@ enum VoicePowerError: LocalizedError {
             return "Transcription failed: \(details)"
         case .emptyTranscript:
             return "Transcription returned empty text"
+        case .missingGroqAPIKey:
+            return "Groq API key is missing. Save it in VoicePower Settings before using Groq."
+        case let .groqRequestFailed(details):
+            return "Groq request failed: \(details)"
         case let .invalidCleanupEndpoint(endpoint):
             return "Invalid cleanup endpoint: \(endpoint)"
         case let .cleanupRequestFailed(details):

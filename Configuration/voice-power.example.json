@@ -12,6 +12,7 @@
     "activationDelayMilliseconds": 180
   },
   "transcription": {
+    "provider": "local",
     "model": "mlx-community/whisper-large-v3-turbo",
     "language": "auto"
   },
@@ -20,6 +21,7 @@
   },
   "cleanup": {
     "enabled": false,
+    "provider": "local",
     "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
     "temperature": 0.0,
     "autoPunctuation": true

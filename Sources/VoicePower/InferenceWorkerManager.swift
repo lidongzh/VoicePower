@@ -94,15 +94,22 @@ actor InferenceWorkerManager {
     }
 
     func prepare(for config: AppConfig) async throws {
+        let requirements = config.localRuntimeRequirements
+        guard requirements.needsWorker else {
+            intentionalShutdown = true
+            await teardownProcess(markAsStopped: true)
+            return
+        }
+
         _ = try await sendRequestWithSingleRestart(
             makeRequest: {
                 Request(
                     id: UUID().uuidString,
                     method: "prepare",
-                    whisperModel: config.resolvedTranscription.resolvedModel,
+                    whisperModel: requirements.needsWhisperModel ? config.resolvedTranscription.resolvedModel : nil,
                     language: nil,
-                    cleanupModel: config.cleanupEnabled ? config.resolvedCleanup.resolvedModel : nil,
-                    cleanupEnabled: config.cleanupEnabled,
+                    cleanupModel: requirements.needsCleanupModel ? config.resolvedCleanup.resolvedModel : nil,
+                    cleanupEnabled: requirements.needsCleanupModel,
                     audioPath: nil,
                     text: nil,
                     systemPrompt: nil,

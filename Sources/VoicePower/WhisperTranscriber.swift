@@ -3,13 +3,29 @@ import Foundation
 struct WhisperTranscriber: Sendable {
     private let config: TranscriptionConfig
     private let workerManager: InferenceWorkerManager
+    private let groqClient: GroqClient
 
-    init(config: TranscriptionConfig, workerManager: InferenceWorkerManager) {
+    init(config: TranscriptionConfig, workerManager: InferenceWorkerManager, groqClient: GroqClient) {
         self.config = config.withDefaults()
         self.workerManager = workerManager
+        self.groqClient = groqClient
     }
 
     func transcribe(audioFileURL: URL) async throws -> String {
+        if config.resolvedProvider == .groq {
+            let transcript = try await groqClient.transcribe(
+                audioFileURL: audioFileURL,
+                model: config.resolvedModel,
+                language: config.resolvedLanguage.lowercased() == "auto" ? nil : config.resolvedLanguage
+            )
+            let normalized = Self.normalize(transcript)
+            guard !normalized.isEmpty else {
+                throw VoicePowerError.emptyTranscript
+            }
+
+            return normalized
+        }
+
         if !config.usesLegacyCommand {
             let transcript = try await workerManager.transcribe(audioFileURL: audioFileURL, config: config)
             let normalized = Self.normalize(transcript)

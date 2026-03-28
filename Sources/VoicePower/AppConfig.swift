@@ -198,8 +198,40 @@ struct AppConfig: Codable, Sendable {
         )
     }
 
+    func settingTranscriptionProvider(_ provider: InferenceProvider) -> AppConfig {
+        let nextTranscription = resolvedTranscription.withProvider(provider)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: nextTranscription,
+            normalization: normalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
     func settingCleanupModel(_ model: String) -> AppConfig {
         let nextCleanup = resolvedCleanup.withModel(model)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: nextCleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func settingCleanupProvider(_ provider: InferenceProvider) -> AppConfig {
+        let nextCleanup = resolvedCleanup.withProvider(provider)
 
         return AppConfig(
             recordingsDirectory: recordingsDirectory,
@@ -225,6 +257,19 @@ struct AppConfig: Codable, Sendable {
             cleanup: cleanup,
             vocabulary: vocabulary.withDefaults(),
             insertion: insertion
+        )
+    }
+
+    var localRuntimeRequirements: LocalRuntimeRequirements {
+        let needsLocalTranscription = resolvedTranscription.usesManagedLocalModel
+        let needsLocalCleanup = cleanupEnabled && resolvedCleanup.usesManagedLocalModel
+        let needsLocalNormalization = resolvedNormalization.usesManagedRuntime
+
+        return LocalRuntimeRequirements(
+            needsBaseRuntime: needsLocalTranscription || needsLocalCleanup || needsLocalNormalization,
+            needsWorker: needsLocalTranscription || needsLocalCleanup,
+            needsWhisperModel: needsLocalTranscription,
+            needsCleanupModel: needsLocalCleanup
         )
     }
 }
@@ -265,6 +310,20 @@ struct RecordingConfig: Codable, Sendable {
     static let defaultConfig = RecordingConfig(saveAudioFiles: false)
 }
 
+enum InferenceProvider: String, Codable, Sendable, CaseIterable {
+    case local
+    case groq
+
+    var title: String {
+        switch self {
+        case .local:
+            return "Local"
+        case .groq:
+            return "Groq"
+        }
+    }
+}
+
 enum HotKeyModifier: String, Codable, Sendable {
     case command
     case control
@@ -291,6 +350,7 @@ struct TranscriptionConfig: Codable, Sendable {
     let command: String?
     let arguments: [String]?
     let outputTextPath: String?
+    let provider: InferenceProvider?
 
     var usesLegacyCommand: Bool {
         guard let command, let arguments else {
@@ -308,9 +368,17 @@ struct TranscriptionConfig: Codable, Sendable {
         return (command ?? "").contains(".venv-mlx-whisper") || (command ?? "").contains("voice_power")
     }
 
+    var resolvedProvider: InferenceProvider {
+        provider ?? .local
+    }
+
+    var usesManagedLocalModel: Bool {
+        resolvedProvider == .local && !usesLegacyCommand
+    }
+
     var resolvedModel: String {
         let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let candidate = trimmed.isEmpty ? Self.defaultModel : trimmed
+        let candidate = trimmed.isEmpty ? Self.defaultModel(for: resolvedProvider) : trimmed
         return Self.canonicalModelID(candidate)
     }
 
@@ -325,7 +393,8 @@ struct TranscriptionConfig: Codable, Sendable {
             language: resolvedLanguage,
             command: command,
             arguments: arguments,
-            outputTextPath: outputTextPath
+            outputTextPath: outputTextPath,
+            provider: provider
         )
     }
 
@@ -335,7 +404,19 @@ struct TranscriptionConfig: Codable, Sendable {
             language: resolvedLanguage,
             command: nil,
             arguments: nil,
-            outputTextPath: nil
+            outputTextPath: nil,
+            provider: provider
+        )
+    }
+
+    func withProvider(_ provider: InferenceProvider) -> TranscriptionConfig {
+        TranscriptionConfig(
+            model: Self.defaultModel(for: provider),
+            language: resolvedLanguage,
+            command: nil,
+            arguments: nil,
+            outputTextPath: nil,
+            provider: provider
         )
     }
 
@@ -345,7 +426,8 @@ struct TranscriptionConfig: Codable, Sendable {
             language: language ?? argumentValue(after: "--language") ?? "auto",
             command: nil,
             arguments: nil,
-            outputTextPath: nil
+            outputTextPath: nil,
+            provider: provider
         )
     }
 
@@ -374,13 +456,36 @@ struct TranscriptionConfig: Codable, Sendable {
         }
     }
 
-    static let defaultModel = "mlx-community/whisper-large-v3-turbo"
+    static var defaultModel: String {
+        defaultModel(for: .local)
+    }
+
+    static func defaultModel(for provider: InferenceProvider) -> String {
+        switch provider {
+        case .local:
+            return "mlx-community/whisper-large-v3-turbo"
+        case .groq:
+            return "whisper-large-v3-turbo"
+        }
+    }
 }
 
 struct TextNormalizationConfig: Codable, Sendable {
     let simplifiedChinese: Bool
     let command: String?
     let arguments: [String]?
+
+    var usesLegacyCommand: Bool {
+        guard let command, let arguments else {
+            return false
+        }
+
+        return !command.isEmpty && !arguments.isEmpty
+    }
+
+    var usesManagedRuntime: Bool {
+        simplifiedChinese && !usesLegacyCommand
+    }
 
     var looksLikeLegacyManagedRuntime: Bool {
         guard (arguments ?? []).contains(where: { $0.contains("simplify_chinese_text.py") }) else {
@@ -413,14 +518,27 @@ struct CleanupConfig: Codable, Sendable {
     let autoPunctuation: Bool?
     let systemPrompt: String?
     let userPromptTemplate: String?
+    let provider: InferenceProvider?
 
     var autoPunctuationEnabled: Bool {
         autoPunctuation ?? true
     }
 
+    var resolvedProvider: InferenceProvider {
+        provider ?? .local
+    }
+
+    var usesLegacyEndpoint: Bool {
+        provider == nil && !(endpoint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    var usesManagedLocalModel: Bool {
+        resolvedProvider == .local && !usesLegacyEndpoint
+    }
+
     var resolvedModel: String {
         let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? Self.defaultModel : trimmed
+        return trimmed.isEmpty ? Self.defaultModel(for: resolvedProvider) : trimmed
     }
 
     var looksLikeLegacyManagedRuntime: Bool {
@@ -446,7 +564,8 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature,
             autoPunctuation: autoPunctuation,
             systemPrompt: systemPrompt,
-            userPromptTemplate: userPromptTemplate
+            userPromptTemplate: userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -458,7 +577,8 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature,
             autoPunctuation: enabled,
             systemPrompt: systemPrompt,
-            userPromptTemplate: userPromptTemplate
+            userPromptTemplate: userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -470,7 +590,21 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature,
             autoPunctuation: autoPunctuation,
             systemPrompt: systemPrompt,
-            userPromptTemplate: userPromptTemplate
+            userPromptTemplate: userPromptTemplate,
+            provider: provider
+        )
+    }
+
+    func withProvider(_ provider: InferenceProvider) -> CleanupConfig {
+        CleanupConfig(
+            enabled: enabled,
+            endpoint: nil,
+            model: Self.defaultModel(for: provider),
+            temperature: temperature,
+            autoPunctuation: autoPunctuation,
+            systemPrompt: systemPrompt,
+            userPromptTemplate: userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -482,7 +616,8 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature ?? 0.0,
             autoPunctuation: autoPunctuationEnabled,
             systemPrompt: systemPrompt ?? CleanupPromptDefaults.systemPrompt,
-            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate
+            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -501,7 +636,8 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature ?? 0.0,
             autoPunctuation: autoPunctuationEnabled,
             systemPrompt: systemPrompt ?? CleanupPromptDefaults.systemPrompt,
-            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate
+            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -513,7 +649,8 @@ struct CleanupConfig: Codable, Sendable {
             temperature: temperature,
             autoPunctuation: autoPunctuation,
             systemPrompt: usesLegacyPromptDefaults ? CleanupPromptDefaults.systemPrompt : systemPrompt,
-            userPromptTemplate: usesLegacyPromptDefaults ? CleanupPromptDefaults.userPromptTemplate : userPromptTemplate
+            userPromptTemplate: usesLegacyPromptDefaults ? CleanupPromptDefaults.userPromptTemplate : userPromptTemplate,
+            provider: provider
         )
     }
 
@@ -524,10 +661,33 @@ struct CleanupConfig: Codable, Sendable {
         temperature: 0.0,
         autoPunctuation: true,
         systemPrompt: CleanupPromptDefaults.systemPrompt,
-        userPromptTemplate: CleanupPromptDefaults.userPromptTemplate
+        userPromptTemplate: CleanupPromptDefaults.userPromptTemplate,
+        provider: nil
     )
 
-    static let defaultModel = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+    static var defaultModel: String {
+        defaultModel(for: .local)
+    }
+
+    static func defaultModel(for provider: InferenceProvider) -> String {
+        switch provider {
+        case .local:
+            return "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+        case .groq:
+            return "llama-3.3-70b-versatile"
+        }
+    }
+}
+
+struct LocalRuntimeRequirements {
+    let needsBaseRuntime: Bool
+    let needsWorker: Bool
+    let needsWhisperModel: Bool
+    let needsCleanupModel: Bool
+
+    var needsPreparation: Bool {
+        needsBaseRuntime || needsWorker || needsWhisperModel || needsCleanupModel
+    }
 }
 
 struct VocabularyConfig: Codable, Sendable {
@@ -670,6 +830,7 @@ enum AppConfigLoader {
         "activationDelayMilliseconds": 180
       },
       "transcription": {
+        "provider": "local",
         "model": "\(TranscriptionConfig.defaultModel)",
         "language": "auto"
       },
@@ -678,6 +839,7 @@ enum AppConfigLoader {
       },
       "cleanup": {
         "enabled": false,
+        "provider": "local",
         "model": "\(CleanupConfig.defaultModel)",
         "temperature": 0.0,
         "autoPunctuation": true,
@@ -713,8 +875,8 @@ enum CleanupPromptDefaults {
     Output only the cleaned text.
     Example input: um okay 所以 tomorrow we can maybe 再看一下这个 part.
     Example output: 所以 tomorrow we can 再看一下这个 part.
-    Example input: uh I think 这个 bug should be fixed today.
-    Example output: I think 这个 bug should be fixed today.
+    Example input: uh the cleanup option 应该默认关闭.
+    Example output: the cleanup option 应该默认关闭.
     """
 
     static let systemPrompt = """
@@ -730,10 +892,10 @@ enum CleanupPromptDefaults {
     Output only the cleaned final text.
     Example input: um okay 所以 tomorrow we can maybe 再看一下这个 part
     Example output: 所以 tomorrow we can 再看一下这个 part.
-    Example input: uh I think 这个 bug should be fixed today because it blocks login
-    Example output: I think 这个 bug should be fixed today, because it blocks login.
-    Example input: 这个东西为什么不会自己加上标点符号呢如果我想disable这个cleanup model该怎么做呢
-    Example output: 这个东西为什么不会自己加上标点符号呢？如果我想 disable 这个 cleanup model，该怎么做呢？
+    Example input: uh the cleanup option 应该默认关闭因为它会改变输出
+    Example output: the cleanup option 应该默认关闭，因为它会改变输出。
+    Example input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢
+    Example output: 这个东西为什么不会自己加上标点符号呢？如果要 disable 这个 cleanup model，该怎么做呢？
     """
 
     static let legacyUserPromptTemplate = """

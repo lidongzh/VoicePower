@@ -18,10 +18,10 @@ Do not over-rewrite or add information.
 Return only the cleaned final text.
 Example input: um okay 所以 tomorrow we can maybe 再看一下这个 part
 Example output: 所以 tomorrow we can 再看一下这个 part.
-Example input: uh I think 这个 bug should be fixed today because it blocks login
-Example output: I think 这个 bug should be fixed today, because it blocks login.
-Example input: 这个东西为什么不会自己加上标点符号呢如果我想disable这个cleanup model该怎么做呢
-Example output: 这个东西为什么不会自己加上标点符号呢？如果我想 disable 这个 cleanup model，该怎么做呢？"""
+Example input: uh the cleanup option 应该默认关闭因为它会改变输出
+Example output: the cleanup option 应该默认关闭，因为它会改变输出。
+Example input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢
+Example output: 这个东西为什么不会自己加上标点符号呢？如果要 disable 这个 cleanup model，该怎么做呢？"""
 
 DEFAULT_USER_PROMPT = """Clean up this dictated text without changing meaning.
 Keep mixed English and Chinese intact.

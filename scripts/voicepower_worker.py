@@ -31,14 +31,14 @@ PUNCTUATION_SYSTEM_APPENDIX = """When adding punctuation:
 - Do not add spaces after Chinese punctuation.
 
 Examples:
-Input: 标点符号还是不行你可以用我的recording做测试你可以一直测试到它可以把标点符号搞定为止
-Output: 标点符号还是不行。你可以用我的recording做测试。你可以一直测试到它可以把标点符号搞定为止。
+Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
+Output: 标点符号还是不行。请继续用这个sample测试，直到它可以正确加上标点。
 
-Input: 今天review three pull requests然后修了login bug
-Output: 今天review three pull requests，然后修了login bug。
+Input: 今天review API docs然后更新settings页面
+Output: 今天review API docs，然后更新settings页面。
 
-Input: Is it a good idea to let the app directly go to the browser instead of being in the app but I do not want to delete the code for the native app interface but I want to directly go to the browser
-Output: Is it a good idea to let the app directly go to the browser instead of being in the app? But I do not want to delete the code for the native app interface. But I want to directly go to the browser.
+Input: Should the app open the browser directly instead of keeping the native setup window for onboarding
+Output: Should the app open the browser directly instead of keeping the native setup window for onboarding?
 """
 
 PUNCTUATION_USER_APPENDIX = """Add sentence boundaries and punctuation when it is clearly helpful and safe.
@@ -144,8 +144,9 @@ class WorkerState:
         self.cleanup_model = None
         self.cleanup_tokenizer = None
 
-    def prepare(self, whisper_model: str, cleanup_enabled: bool, cleanup_model: Optional[str]) -> dict:
-        self._ensure_whisper_loaded(whisper_model)
+    def prepare(self, whisper_model: Optional[str], cleanup_enabled: bool, cleanup_model: Optional[str]) -> dict:
+        if whisper_model:
+            self._ensure_whisper_loaded(whisper_model)
 
         if cleanup_enabled and cleanup_model:
             self._ensure_cleanup_loaded(cleanup_model)
@@ -352,13 +353,13 @@ def main() -> int:
 
             if method == "prepare":
                 result = worker.prepare(
-                    whisper_model=request["whisperModel"],
+                    whisper_model=request.get("whisperModel"),
                     cleanup_enabled=bool(request.get("cleanupEnabled")),
                     cleanup_model=request.get("cleanupModel"),
                 )
             elif method == "reload_models":
                 result = worker.prepare(
-                    whisper_model=request["whisperModel"],
+                    whisper_model=request.get("whisperModel"),
                     cleanup_enabled=bool(request.get("cleanupEnabled")),
                     cleanup_model=request.get("cleanupModel"),
                 )

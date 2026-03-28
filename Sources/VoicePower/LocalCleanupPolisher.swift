@@ -3,10 +3,12 @@ import Foundation
 struct LocalCleanupPolisher: Sendable {
     private let config: CleanupConfig?
     private let workerManager: InferenceWorkerManager
+    private let groqClient: GroqClient
 
-    init(config: CleanupConfig?, workerManager: InferenceWorkerManager) {
+    init(config: CleanupConfig?, workerManager: InferenceWorkerManager, groqClient: GroqClient) {
         self.config = config
         self.workerManager = workerManager
+        self.groqClient = groqClient
     }
 
     func polish(_ rawText: String) async throws -> String {
@@ -21,7 +23,7 @@ struct LocalCleanupPolisher: Sendable {
         }
 
         let generatedText: String
-        if let endpoint = resolvedConfig.endpoint, !endpoint.isEmpty {
+        if resolvedConfig.usesLegacyEndpoint, let endpoint = resolvedConfig.endpoint, !endpoint.isEmpty {
             generatedText = try await polishWithLegacyOllama(
                 rawText,
                 model: resolvedConfig.resolvedModel,
@@ -29,6 +31,22 @@ struct LocalCleanupPolisher: Sendable {
                 userPromptTemplate: resolvedConfig.userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
                 temperature: resolvedConfig.temperature ?? 0.0,
                 endpoint: endpoint
+            )
+        } else if resolvedConfig.resolvedProvider == .groq {
+            let prompt = Self.buildGroqCleanupPrompt(
+                rawText,
+                model: resolvedConfig.resolvedModel,
+                systemPrompt: resolvedConfig.systemPrompt ?? CleanupPromptDefaults.systemPrompt,
+                userPromptTemplate: resolvedConfig.userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
+                autoPunctuation: resolvedConfig.autoPunctuationEnabled
+            )
+            generatedText = try await groqClient.cleanup(
+                rawText: rawText,
+                model: resolvedConfig.resolvedModel,
+                systemPrompt: prompt.systemPrompt,
+                userPrompt: prompt.userPrompt,
+                temperature: resolvedConfig.temperature ?? 0.0,
+                maxCompletionTokens: resolvedConfig.autoPunctuationEnabled ? 256 : 192
             )
         } else {
             generatedText = try await workerManager.polish(rawText, config: resolvedConfig)
@@ -105,6 +123,66 @@ struct LocalCleanupPolisher: Sendable {
         let resolvedTemplate = template ?? CleanupPromptDefaults.userPromptTemplate
         return resolvedTemplate.replacingOccurrences(of: "{{text}}", with: rawText)
     }
+
+    private static func buildGroqCleanupPrompt(
+        _ rawText: String,
+        model: String,
+        systemPrompt: String,
+        userPromptTemplate: String,
+        autoPunctuation: Bool
+    ) -> (systemPrompt: String, userPrompt: String) {
+        var finalSystemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var finalUserPrompt = makePrompt(rawText, template: userPromptTemplate)
+
+        if autoPunctuation {
+            finalSystemPrompt = "\(finalSystemPrompt)\n\n\(punctuationSystemAppendix)".trimmingCharacters(in: .whitespacesAndNewlines)
+            finalUserPrompt = "\(punctuationUserAppendix)\n\n\(finalUserPrompt)".trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            finalSystemPrompt = "\(finalSystemPrompt)\nDo not add punctuation unless the original transcript already makes it obvious."
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if model.lowercased().contains("qwen3") {
+            finalSystemPrompt = """
+            \(finalSystemPrompt)
+
+            Use non-thinking mode. Do not emit reasoning, chain-of-thought, or <think> blocks.
+            Return only the final cleaned text.
+            """.trimmingCharacters(in: .whitespacesAndNewlines)
+            finalUserPrompt = "/no_think\n\(finalUserPrompt)"
+        }
+
+        return (finalSystemPrompt, finalUserPrompt)
+    }
+
+    private static let punctuationSystemAppendix = """
+    When adding punctuation:
+    - Preserve every original word in the same order.
+    - Never translate English into Chinese.
+    - Never translate Chinese into English.
+    - Never add or remove content except safe punctuation and spacing around punctuation.
+    - Keep English words separated by spaces.
+    - Do not insert spaces between Chinese and English words.
+    - Use Chinese punctuation after Chinese text.
+    - Use English punctuation after English text.
+    - Add one space after English punctuation when another token follows.
+    - Do not add spaces after Chinese punctuation.
+
+    Examples:
+    Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
+    Output: 标点符号还是不行。请继续用这个sample测试，直到它可以正确加上标点。
+
+    Input: 今天review API docs然后更新settings页面
+    Output: 今天review API docs，然后更新settings页面。
+
+    Input: Should the app open the browser directly instead of keeping the native setup window for onboarding
+    Output: Should the app open the browser directly instead of keeping the native setup window for onboarding?
+    """
+
+    private static let punctuationUserAppendix = """
+    Add sentence boundaries and punctuation when it is clearly helpful and safe.
+    Do not rewrite, summarize, or improve word choice.
+    """
 }
 
 private struct OllamaGenerateRequest: Encodable {

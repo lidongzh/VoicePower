@@ -1,6 +1,6 @@
 # VoicePower
 
-VoicePower is a local macOS voice typing prototype for mixed English and Chinese dictation. It records audio from the microphone, bootstraps a local `mlx-whisper` runtime on first launch, optionally runs a local MLX cleanup model, normalizes the final text to simplified Chinese when configured, then pastes the result into the active application.
+VoicePower is a macOS voice typing prototype for mixed English and Chinese dictation. It records audio from the microphone, can run transcription and cleanup either locally or through Groq, normalizes the final text to simplified Chinese when configured, then pastes the result into the active application.
 
 This is intentionally closer to "push to talk and paste" than a full macOS Input Method Editor. For a first version, that tradeoff keeps the implementation small and local while still matching the workflow of tools like Typeless.
 
@@ -48,10 +48,11 @@ To build a GitHub-release style disk image instead:
    - Microphone permission
    - Accessibility permission
    - Input Monitoring permission if you want right-`Command` hold-to-talk
-4. Wait for the menu bar app to finish preparing the local runtime and Whisper model.
-5. Optional: turn `Cleanup: On` in the menu. The app will download the cleanup model on demand.
+4. If you keep either stage on `Local`, wait for the menu bar app to finish preparing the local runtime and Whisper model.
+5. If you switch either stage to `Groq`, save a Groq API key in `Settings…`.
+6. Optional: turn `Cleanup: On` in the menu. Local cleanup models are downloaded on demand.
 
-If `~/.voice-power/config.json` does not exist yet, VoicePower creates it automatically on first launch using [Configuration/voice-power.example.json](/Users/lidongzh/Documents/RESEARCH_CODE/DEV/voice_power/Configuration/voice-power.example.json) as the shape.
+If `~/.voice-power/config.json` does not exist yet, VoicePower creates it automatically on first launch using [Configuration/voice-power.example.json](Configuration/voice-power.example.json) as the shape.
 
 During development you can still run from Terminal:
 
@@ -77,13 +78,16 @@ The menu bar app exposes these toggles directly:
 
 The `Settings…` window lets you choose:
 
+- Transcription provider (`Local` or `Groq`)
 - Whisper model
+- Cleanup provider (`Local` or `Groq`)
 - Cleanup model
 - Cleanup on/off
 - Auto punctuation on/off
 - Save recorded audio on/off
+- Groq API key in Keychain
 
-Cleanup does not require Ollama anymore. The app runs cleanup locally through its app-managed MLX runtime.
+Cleanup does not require Ollama anymore. The app can run cleanup locally through its app-managed MLX runtime or remotely through Groq.
 
 If you start a second recording while a previous one is still being transcribed or cleaned, VoicePower now processes the recordings in FIFO order instead of letting them race each other.
 
@@ -101,6 +105,7 @@ The default cleanup worker is tuned for:
 
 - Text insertion is paste-based, so clipboard restore is best-effort for plain text only.
 - First launch is slower because the app may need to create its local Python runtime and download models.
+- Groq-backed inference sends recorded audio or cleanup text to Groq, so it is not fully local.
 - Right-`Command` hold-to-talk depends on Input Monitoring permission in addition to Microphone and Accessibility.
 - This is not a true IME yet. It is a global dictation helper.
 - No VAD or streaming transcription yet.

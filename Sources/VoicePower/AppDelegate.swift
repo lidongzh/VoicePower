@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let permissions = PermissionCoordinator()
     private let runtimeBootstrapper = RuntimeBootstrapper()
     private let inferenceWorker = InferenceWorkerManager()
+    private let groqAPIKeyStore = GroqAPIKeyStore()
     private var statusMenuController: StatusMenuController?
     private var settingsWindowController: SettingsWindowController?
     private var voiceTypingController: VoiceTypingController?
@@ -49,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.permissions.openInputMonitoringSettings()
             }
             controller.onPrepareRuntime = { [weak self] in
-                self?.prepareRuntimeIfNeeded(includeCleanupModel: self?.currentConfig?.cleanupEnabled == true)
+                self?.prepareRuntimeIfNeeded()
             }
             controller.onReload = { [weak self] in
                 self?.configureApplication()
@@ -72,10 +73,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentConfigURL = configURL
 
             let audioRecorder = try AudioRecorder(recordingsDirectory: config.recordingsDirectoryURL)
-            let transcriber = WhisperTranscriber(config: config.resolvedTranscription, workerManager: inferenceWorker)
+            let groqClient = GroqClient(apiKeyStore: groqAPIKeyStore)
+            let transcriber = WhisperTranscriber(
+                config: config.resolvedTranscription,
+                workerManager: inferenceWorker,
+                groqClient: groqClient
+            )
             let vocabularyCorrector = VocabularyCorrector(config: config.resolvedVocabulary)
             let textNormalizer = TextNormalizer(config: config.resolvedNormalization)
-            let textPolisher = LocalCleanupPolisher(config: config.resolvedCleanup, workerManager: inferenceWorker)
+            let textPolisher = LocalCleanupPolisher(
+                config: config.resolvedCleanup,
+                workerManager: inferenceWorker,
+                groqClient: groqClient
+            )
             let textInjector = TextInjector(restoreClipboard: config.insertion.restoreClipboard)
             let voiceTypingController = VoiceTypingController(
                 audioRecorder: audioRecorder,
@@ -99,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             self.voiceTypingController = voiceTypingController
             ensureSettingsWindowController()
-            settingsWindowController?.apply(config: config)
+            settingsWindowController?.apply(config: config, hasGroqAPIKey: hasStoredGroqAPIKey())
             statusMenuController?.setConfigPath(configURL.path.abbreviatedTildePath)
             settingsWindowController?.setRuntimePreparationInProgress(false)
             updateHoldToTalkPermissionStatus(using: config)
@@ -143,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             refreshRuntimeStatus(using: config)
-            prepareRuntimeIfNeeded(includeCleanupModel: config.cleanupEnabled)
+            prepareRuntimeIfNeeded()
 
             if loadedConfig.createdDefaultConfig {
                 presentFirstLaunchAlert(configPath: configURL.path)
@@ -174,22 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let snapshot = await runtimeBootstrapper.snapshot(for: config)
             await MainActor.run {
                 updateHoldToTalkPermissionStatus(using: config)
-                let runtimeStatus = snapshot.baseRuntimeReady ? "Ready" : "Needs Setup"
-                let workerStatus = snapshot.baseRuntimeReady ? "Pending" : "Needs Runtime"
-                let whisperStatus = snapshot.whisperModelReady ? "Ready" : "Pending Download"
-                let cleanupStatus: String
-                if config.cleanupEnabled {
-                    cleanupStatus = snapshot.cleanupModelReady ? "Ready" : "Pending Download"
-                } else {
-                    cleanupStatus = snapshot.cleanupModelReady ? "Ready (Optional)" : "Optional"
-                }
-                applyRuntimeStatuses(
-                    runtime: runtimeStatus,
-                    worker: workerStatus,
-                    whisper: whisperStatus,
-                    cleanup: cleanupStatus,
-                    isPreparing: false
-                )
+                applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
             }
         }
     }
@@ -213,8 +208,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let controller = SettingsWindowController()
+        controller.onTranscriptionProviderChange = { [weak self] provider in
+            self?.setTranscriptionProvider(provider)
+        }
         controller.onWhisperModelChange = { [weak self] model in
             self?.setWhisperModel(model)
+        }
+        controller.onCleanupProviderChange = { [weak self] provider in
+            self?.setCleanupProvider(provider)
         }
         controller.onCleanupModelChange = { [weak self] model in
             self?.setCleanupModel(model)
@@ -232,7 +233,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setVocabulary(enabled: enabled, rawText: rawText)
         }
         controller.onPrepareRuntime = { [weak self] in
-            self?.prepareRuntimeIfNeeded(includeCleanupModel: self?.currentConfig?.cleanupEnabled == true)
+            self?.prepareRuntimeIfNeeded()
+        }
+        controller.onSaveGroqAPIKey = { [weak self] apiKey in
+            self?.saveGroqAPIKey(apiKey)
+        }
+        controller.onClearGroqAPIKey = { [weak self] in
+            self?.clearGroqAPIKey()
         }
         settingsWindowController = controller
     }
@@ -250,6 +257,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyWorkerStatus(_ status: String) {
+        guard currentConfig?.localRuntimeRequirements.needsWorker == true else {
+            statusMenuController?.setWorkerStatus("Not Used")
+            settingsWindowController?.setWorkerStatus("Not Used")
+            return
+        }
+
         statusMenuController?.setWorkerStatus(status)
         settingsWindowController?.setWorkerStatus(status)
     }
@@ -261,11 +274,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         ensureSettingsWindowController()
-        settingsWindowController?.show(with: currentConfig)
+        settingsWindowController?.show(with: currentConfig, hasGroqAPIKey: hasStoredGroqAPIKey())
     }
 
-    private func prepareRuntimeIfNeeded(includeCleanupModel: Bool) {
+    private func prepareRuntimeIfNeeded() {
         guard let config = currentConfig else {
+            return
+        }
+
+        let requirements = config.localRuntimeRequirements
+        guard requirements.needsPreparation else {
+            refreshRuntimeStatus(using: config)
             return
         }
 
@@ -278,62 +297,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 await MainActor.run {
                     applyRuntimeStatuses(
-                        runtime: "Preparing",
-                        worker: "Pending",
-                        whisper: "Downloading",
-                        cleanup: includeCleanupModel ? "Pending Download" : "Optional",
+                        runtime: requirements.needsBaseRuntime ? "Preparing" : "Not Needed",
+                        worker: requirements.needsWorker ? "Pending" : "Not Used",
+                        whisper: requirements.needsWhisperModel ? "Downloading" : whisperStatusText(for: config, snapshot: nil),
+                        cleanup: requirements.needsCleanupModel ? "Pending Download" : cleanupStatusText(for: config, snapshot: nil),
                         isPreparing: true
                     )
                 }
-                try await runtimeBootstrapper.ensureBaseRuntimeReady()
-                try await runtimeBootstrapper.ensureWhisperModelReady(config.resolvedTranscription.resolvedModel)
-
-                await MainActor.run {
-                    applyRuntimeStatuses(
-                        runtime: "Ready",
-                        worker: "Pending",
-                        whisper: "Ready",
-                        cleanup: includeCleanupModel ? "Downloading" : "Optional",
-                        isPreparing: includeCleanupModel
-                    )
+                if requirements.needsBaseRuntime {
+                    try await runtimeBootstrapper.ensureBaseRuntimeReady()
                 }
 
-                if includeCleanupModel {
+                if requirements.needsWhisperModel {
+                    try await runtimeBootstrapper.ensureWhisperModelReady(config.resolvedTranscription.resolvedModel)
+                }
+
+                if requirements.needsCleanupModel {
                     await MainActor.run {
                         applyRuntimeStatuses(
                             runtime: "Ready",
-                            worker: "Pending",
-                            whisper: "Ready",
+                            worker: requirements.needsWorker ? "Pending" : "Not Used",
+                            whisper: whisperStatusText(for: config, snapshot: nil, forceLocalReady: true),
                             cleanup: "Downloading",
                             isPreparing: true
                         )
                     }
                     try await runtimeBootstrapper.ensureCleanupModelReady(config.resolvedCleanup.resolvedModel)
-                } else {
+                }
+
+                if requirements.needsWorker {
                     await MainActor.run {
-                        applyRuntimeStatuses(
-                            runtime: "Ready",
-                            worker: "Pending",
-                            whisper: "Ready",
-                            cleanup: "Optional",
-                            isPreparing: true
-                        )
+                        applyWorkerStatus("Warming")
                     }
+                    try await inferenceWorker.prepare(for: config)
                 }
 
-                await MainActor.run {
-                    applyWorkerStatus("Warming")
-                }
-                try await inferenceWorker.prepare(for: config)
+                let snapshot = await runtimeBootstrapper.snapshot(for: config)
 
                 await MainActor.run {
-                    applyRuntimeStatuses(
-                        runtime: "Ready",
-                        worker: "Ready",
-                        whisper: "Ready",
-                        cleanup: includeCleanupModel ? "Ready" : "Optional",
-                        isPreparing: false
-                    )
+                    applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
+                    if requirements.needsWorker {
+                        applyWorkerStatus("Ready")
+                    }
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -343,16 +348,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 await MainActor.run {
                     applyRuntimeStatuses(
-                        runtime: "Error",
-                        worker: "Error",
-                        whisper: "Retry Needed",
-                        cleanup: includeCleanupModel ? "Retry Needed" : "Optional",
+                        runtime: requirements.needsBaseRuntime ? "Error" : "Not Needed",
+                        worker: requirements.needsWorker ? "Error" : "Not Used",
+                        whisper: requirements.needsWhisperModel ? "Retry Needed" : whisperStatusText(for: config, snapshot: nil),
+                        cleanup: requirements.needsCleanupModel ? "Retry Needed" : cleanupStatusText(for: config, snapshot: nil),
                         isPreparing: false
                     )
                     presentRuntimeAlert(message: error.localizedDescription)
                 }
             }
         }
+    }
+
+    private func applyRuntimeSnapshot(_ snapshot: RuntimeSnapshot, for config: AppConfig, isPreparing: Bool) {
+        applyRuntimeStatuses(
+            runtime: runtimeStatusText(for: config, snapshot: snapshot),
+            worker: workerStatusText(for: config, snapshot: snapshot),
+            whisper: whisperStatusText(for: config, snapshot: snapshot),
+            cleanup: cleanupStatusText(for: config, snapshot: snapshot),
+            isPreparing: isPreparing
+        )
+    }
+
+    private func runtimeStatusText(for config: AppConfig, snapshot: RuntimeSnapshot?) -> String {
+        guard config.localRuntimeRequirements.needsBaseRuntime else {
+            return "Not Needed"
+        }
+
+        guard let snapshot else {
+            return "Needs Setup"
+        }
+
+        return snapshot.baseRuntimeReady ? "Ready" : "Needs Setup"
+    }
+
+    private func workerStatusText(for config: AppConfig, snapshot: RuntimeSnapshot?) -> String {
+        guard config.localRuntimeRequirements.needsWorker else {
+            return "Not Used"
+        }
+
+        guard let snapshot else {
+            return "Pending"
+        }
+
+        return snapshot.baseRuntimeReady ? "Pending" : "Needs Runtime"
+    }
+
+    private func whisperStatusText(for config: AppConfig, snapshot: RuntimeSnapshot?, forceLocalReady: Bool = false) -> String {
+        let transcription = config.resolvedTranscription
+
+        if transcription.usesLegacyCommand {
+            return "Custom Command"
+        }
+
+        if transcription.resolvedProvider == .groq {
+            return "Remote (Groq)"
+        }
+
+        if forceLocalReady {
+            return "Ready"
+        }
+
+        guard let snapshot else {
+            return "Pending Download"
+        }
+
+        return snapshot.whisperModelReady ? "Ready" : "Pending Download"
+    }
+
+    private func cleanupStatusText(for config: AppConfig, snapshot: RuntimeSnapshot?) -> String {
+        let cleanup = config.resolvedCleanup
+
+        if !config.cleanupEnabled {
+            if cleanup.usesLegacyEndpoint {
+                return "Optional (Custom Endpoint)"
+            }
+
+            if cleanup.resolvedProvider == .groq {
+                return "Optional (Groq)"
+            }
+
+            guard let snapshot else {
+                return "Optional"
+            }
+
+            return snapshot.cleanupModelReady ? "Ready (Optional)" : "Optional"
+        }
+
+        if cleanup.usesLegacyEndpoint {
+            return "Custom Endpoint"
+        }
+
+        if cleanup.resolvedProvider == .groq {
+            return "Remote (Groq)"
+        }
+
+        guard let snapshot else {
+            return "Pending Download"
+        }
+
+        return snapshot.cleanupModelReady ? "Ready" : "Pending Download"
     }
 
     private func presentFirstLaunchAlert(configPath: String) {
@@ -437,8 +532,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistUpdatedConfig(
             currentConfig.settingTranscriptionModel(model),
             to: currentConfigURL,
-            errorPrefix: "Failed to update Whisper model",
-            prepareRuntime: true
+            errorPrefix: "Failed to update Whisper model"
+        )
+    }
+
+    private func setTranscriptionProvider(_ provider: InferenceProvider) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingTranscriptionProvider(provider),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update transcription provider"
         )
     }
 
@@ -451,8 +558,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistUpdatedConfig(
             currentConfig.settingCleanupModel(model),
             to: currentConfigURL,
-            errorPrefix: "Failed to update cleanup model",
-            prepareRuntime: currentConfig.cleanupEnabled
+            errorPrefix: "Failed to update cleanup model"
+        )
+    }
+
+    private func setCleanupProvider(_ provider: InferenceProvider) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingCleanupProvider(provider),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update cleanup provider"
         )
     }
 
@@ -465,8 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistUpdatedConfig(
             currentConfig.settingCleanupEnabled(enabled),
             to: currentConfigURL,
-            errorPrefix: "Failed to update cleanup setting",
-            prepareRuntime: enabled
+            errorPrefix: "Failed to update cleanup setting"
         )
     }
 
@@ -479,8 +597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistUpdatedConfig(
             currentConfig.settingAutoPunctuationEnabled(enabled),
             to: currentConfigURL,
-            errorPrefix: "Failed to update punctuation setting",
-            prepareRuntime: false
+            errorPrefix: "Failed to update punctuation setting"
         )
     }
 
@@ -493,8 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistUpdatedConfig(
             currentConfig.settingSaveAudioFilesEnabled(enabled),
             to: currentConfigURL,
-            errorPrefix: "Failed to update save-audio setting",
-            prepareRuntime: false
+            errorPrefix: "Failed to update save-audio setting"
         )
     }
 
@@ -513,11 +629,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             persistUpdatedConfig(
                 currentConfig.settingVocabulary(updatedVocabulary),
                 to: currentConfigURL,
-                errorPrefix: "Failed to update vocabulary",
-                prepareRuntime: false
+                errorPrefix: "Failed to update vocabulary"
             )
         } catch {
             presentRuntimeAlert(message: "Failed to update vocabulary: \(error.localizedDescription)")
+        }
+    }
+
+    private func saveGroqAPIKey(_ apiKey: String) {
+        do {
+            try groqAPIKeyStore.save(apiKey)
+            settingsWindowController?.setGroqAPIKeySaved(hasStoredGroqAPIKey())
+        } catch {
+            presentRuntimeAlert(message: "Failed to save Groq API key: \(error.localizedDescription)")
+        }
+    }
+
+    private func clearGroqAPIKey() {
+        do {
+            try groqAPIKeyStore.clear()
+            settingsWindowController?.setGroqAPIKeySaved(false)
+        } catch {
+            presentRuntimeAlert(message: "Failed to clear Groq API key: \(error.localizedDescription)")
         }
     }
 
@@ -565,17 +698,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return entries
     }
 
-    private func persistUpdatedConfig(_ updatedConfig: AppConfig, to url: URL, errorPrefix: String, prepareRuntime: Bool) {
+    private func persistUpdatedConfig(_ updatedConfig: AppConfig, to url: URL, errorPrefix: String) {
         do {
             try AppConfigLoader.save(updatedConfig, to: url)
             currentConfig = updatedConfig
             configureApplication()
-            settingsWindowController?.apply(config: updatedConfig)
-            if prepareRuntime {
-                prepareRuntimeIfNeeded(includeCleanupModel: updatedConfig.cleanupEnabled)
-            }
         } catch {
             presentRuntimeAlert(message: "\(errorPrefix): \(error.localizedDescription)")
+        }
+    }
+
+    private func hasStoredGroqAPIKey() -> Bool {
+        do {
+            return try groqAPIKeyStore.load() != nil
+        } catch {
+            return false
         }
     }
 }
