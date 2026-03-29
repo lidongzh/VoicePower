@@ -9,7 +9,7 @@ DMG_PATH="$ROOT_DIR/dist/$APP_NAME.dmg"
 STAGING_DIR="$ROOT_DIR/dist/dmg-staging"
 VOLUME_NAME="$APP_NAME"
 
-"$ROOT_DIR/scripts/build_app.sh"
+"$ROOT_DIR/scripts/build_app.sh" "$@"
 
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"

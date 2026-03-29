@@ -25,6 +25,10 @@ struct AppConfig: Codable, Sendable {
         recording?.saveAudioFiles ?? RecordingConfig.defaultConfig.saveAudioFiles
     }
 
+    var reviewBeforePasteEnabled: Bool {
+        insertion.reviewBeforePasteEnabled
+    }
+
     var resolvedHoldToTalk: HoldToTalkConfig {
         holdToTalk ?? .defaultConfig
     }
@@ -55,6 +59,16 @@ struct AppConfig: Codable, Sendable {
         resolvedCleanup.usesLegacyPromptDefaults
     }
 
+    var needsCleanupPromptSchemaRefresh: Bool {
+        guard let cleanup else {
+            return false
+        }
+
+        return cleanup.promptProfiles == nil
+            || cleanup.selectedPromptProfileID == nil
+            || cleanup.punctuationStyle == nil
+    }
+
     func migratedToManagedRuntimeDefaults() -> AppConfig {
         AppConfig(
             recordingsDirectory: recordingsDirectory,
@@ -78,6 +92,20 @@ struct AppConfig: Codable, Sendable {
             transcription: transcription,
             normalization: normalization,
             cleanup: resolvedCleanup.refreshingPromptDefaults(),
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func refreshedCleanupPromptSchema() -> AppConfig {
+        AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup?.withDefaults(),
             vocabulary: vocabulary,
             insertion: insertion
         )
@@ -166,6 +194,22 @@ struct AppConfig: Codable, Sendable {
         )
     }
 
+    func settingCleanupPunctuationStyle(_ style: CleanupPunctuationStyle) -> AppConfig {
+        let nextCleanup = resolvedCleanup.withPunctuationStyle(style)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: nextCleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
     func settingSaveAudioFilesEnabled(_ enabled: Bool) -> AppConfig {
         let nextRecording = (recording ?? .defaultConfig).withSaveAudioFiles(enabled)
 
@@ -174,6 +218,38 @@ struct AppConfig: Codable, Sendable {
             recording: nextRecording,
             hotkey: hotkey,
             holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func settingHoldToTalkEnabled(_ enabled: Bool) -> AppConfig {
+        let nextHoldToTalk = resolvedHoldToTalk.withEnabled(enabled)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: nextHoldToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func settingHoldToTalkActivationDelayMilliseconds(_ milliseconds: Int) -> AppConfig {
+        let nextHoldToTalk = resolvedHoldToTalk.withActivationDelayMilliseconds(milliseconds)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: nextHoldToTalk,
             transcription: transcription,
             normalization: normalization,
             cleanup: cleanup,
@@ -260,6 +336,50 @@ struct AppConfig: Codable, Sendable {
         )
     }
 
+    func settingReviewBeforePasteEnabled(_ enabled: Bool) -> AppConfig {
+        AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary,
+            insertion: insertion.withReviewBeforePaste(enabled)
+        )
+    }
+
+    func settingCleanupPromptProfiles(_ promptProfiles: [CleanupPromptProfile], selectedPromptProfileID: String) -> AppConfig {
+        let nextCleanup = resolvedCleanup.withPromptProfiles(promptProfiles, selectedPromptProfileID: selectedPromptProfileID)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: nextCleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
+    func normalizedForPersistence() -> AppConfig {
+        AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: normalization,
+            cleanup: cleanup?.withDefaults(),
+            vocabulary: vocabulary?.withDefaults(),
+            insertion: insertion.withDefaults()
+        )
+    }
+
     var localRuntimeRequirements: LocalRuntimeRequirements {
         let needsLocalTranscription = resolvedTranscription.usesManagedLocalModel
         let needsLocalCleanup = cleanupEnabled && resolvedCleanup.usesManagedLocalModel
@@ -298,6 +418,20 @@ struct HoldToTalkConfig: Codable, Sendable {
         enabled: true,
         activationDelayMilliseconds: 180
     )
+
+    func withEnabled(_ enabled: Bool) -> HoldToTalkConfig {
+        HoldToTalkConfig(
+            enabled: enabled,
+            activationDelayMilliseconds: activationDelayMilliseconds
+        )
+    }
+
+    func withActivationDelayMilliseconds(_ milliseconds: Int) -> HoldToTalkConfig {
+        HoldToTalkConfig(
+            enabled: enabled,
+            activationDelayMilliseconds: max(0, milliseconds)
+        )
+    }
 }
 
 struct RecordingConfig: Codable, Sendable {
@@ -322,6 +456,68 @@ enum InferenceProvider: String, Codable, Sendable, CaseIterable {
             return "Groq"
         }
     }
+}
+
+enum CleanupPunctuationStyle: String, Codable, Sendable, CaseIterable {
+    case chinese
+    case english
+
+    var title: String {
+        switch self {
+        case .chinese:
+            return "Chinese punctuation"
+        case .english:
+            return "English punctuation"
+        }
+    }
+}
+
+struct CleanupPromptProfile: Codable, Sendable, Equatable {
+    static let defaultProfileID = "default"
+    static let migratedProfileID = "migrated"
+
+    let id: String
+    let name: String
+    let systemPrompt: String
+    let userPromptTemplate: String
+    let isBuiltIn: Bool?
+
+    var resolvedName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Prompt" : trimmed
+    }
+
+    var resolvedSystemPrompt: String {
+        let trimmed = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? CleanupPromptDefaults.systemPrompt : trimmed
+    }
+
+    var resolvedUserPromptTemplate: String {
+        let trimmed = userPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? CleanupPromptDefaults.userPromptTemplate : trimmed
+    }
+
+    var resolvedIsBuiltIn: Bool {
+        isBuiltIn ?? false
+    }
+
+    func normalized() -> CleanupPromptProfile {
+        CleanupPromptProfile(
+            id: id.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: resolvedName,
+            systemPrompt: resolvedSystemPrompt,
+            userPromptTemplate: resolvedUserPromptTemplate,
+            isBuiltIn: resolvedIsBuiltIn
+        )
+    }
+
+    static let defaultProfile = CleanupPromptProfile(
+        id: defaultProfileID,
+        name: "Default",
+        systemPrompt: CleanupPromptDefaults.systemPrompt,
+        userPromptTemplate: CleanupPromptDefaults.userPromptTemplate,
+        isBuiltIn: true
+    )
 }
 
 enum HotKeyModifier: String, Codable, Sendable {
@@ -518,7 +714,28 @@ struct CleanupConfig: Codable, Sendable {
     let autoPunctuation: Bool?
     let systemPrompt: String?
     let userPromptTemplate: String?
+    let promptProfiles: [CleanupPromptProfile]?
+    let selectedPromptProfileID: String?
+    let punctuationStyle: CleanupPunctuationStyle?
     let provider: InferenceProvider?
+
+    private var normalizedLegacySystemPrompt: String {
+        let trimmed = (systemPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? CleanupPromptDefaults.systemPrompt : trimmed
+    }
+
+    private var normalizedLegacyUserPromptTemplate: String {
+        let trimmed = (userPromptTemplate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? CleanupPromptDefaults.userPromptTemplate : trimmed
+    }
+
+    private var needsMigratedLegacyPromptProfile: Bool {
+        promptProfiles == nil
+            && (
+                normalizedLegacySystemPrompt != CleanupPromptDefaults.systemPrompt
+                    || normalizedLegacyUserPromptTemplate != CleanupPromptDefaults.userPromptTemplate
+            )
+    }
 
     var autoPunctuationEnabled: Bool {
         autoPunctuation ?? true
@@ -526,6 +743,10 @@ struct CleanupConfig: Codable, Sendable {
 
     var resolvedProvider: InferenceProvider {
         provider ?? .local
+    }
+
+    var resolvedPunctuationStyle: CleanupPunctuationStyle {
+        punctuationStyle ?? .chinese
     }
 
     var usesLegacyEndpoint: Bool {
@@ -556,6 +777,51 @@ struct CleanupConfig: Codable, Sendable {
             || normalizedUserPrompt == CleanupPromptDefaults.legacyUserPromptTemplate
     }
 
+    var resolvedPromptProfiles: [CleanupPromptProfile] {
+        var profiles = (promptProfiles ?? [])
+            .map { $0.normalized() }
+            .filter { !$0.id.isEmpty }
+
+        if let index = profiles.firstIndex(where: { $0.id == CleanupPromptProfile.defaultProfileID }) {
+            profiles[index] = CleanupPromptProfile.defaultProfile
+        } else {
+            profiles.insert(CleanupPromptProfile.defaultProfile, at: 0)
+        }
+
+        if needsMigratedLegacyPromptProfile,
+           !profiles.contains(where: { $0.id == CleanupPromptProfile.migratedProfileID }) {
+            profiles.append(
+                CleanupPromptProfile(
+                    id: CleanupPromptProfile.migratedProfileID,
+                    name: "Migrated",
+                    systemPrompt: normalizedLegacySystemPrompt,
+                    userPromptTemplate: normalizedLegacyUserPromptTemplate,
+                    isBuiltIn: false
+                )
+            )
+        }
+
+        return profiles
+    }
+
+    var resolvedSelectedPromptProfileID: String {
+        let trimmed = (selectedPromptProfileID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if resolvedPromptProfiles.contains(where: { $0.id == trimmed }) {
+            return trimmed
+        }
+
+        if needsMigratedLegacyPromptProfile,
+           resolvedPromptProfiles.contains(where: { $0.id == CleanupPromptProfile.migratedProfileID }) {
+            return CleanupPromptProfile.migratedProfileID
+        }
+
+        return CleanupPromptProfile.defaultProfileID
+    }
+
+    var selectedPromptProfile: CleanupPromptProfile {
+        resolvedPromptProfiles.first(where: { $0.id == resolvedSelectedPromptProfileID }) ?? CleanupPromptProfile.defaultProfile
+    }
+
     func withEnabled(_ enabled: Bool) -> CleanupConfig {
         CleanupConfig(
             enabled: enabled,
@@ -565,6 +831,9 @@ struct CleanupConfig: Codable, Sendable {
             autoPunctuation: autoPunctuation,
             systemPrompt: systemPrompt,
             userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: punctuationStyle,
             provider: provider
         )
     }
@@ -578,6 +847,25 @@ struct CleanupConfig: Codable, Sendable {
             autoPunctuation: enabled,
             systemPrompt: systemPrompt,
             userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: punctuationStyle,
+            provider: provider
+        )
+    }
+
+    func withPunctuationStyle(_ style: CleanupPunctuationStyle) -> CleanupConfig {
+        CleanupConfig(
+            enabled: enabled,
+            endpoint: endpoint,
+            model: model,
+            temperature: temperature,
+            autoPunctuation: autoPunctuation,
+            systemPrompt: systemPrompt,
+            userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: style,
             provider: provider
         )
     }
@@ -591,6 +879,9 @@ struct CleanupConfig: Codable, Sendable {
             autoPunctuation: autoPunctuation,
             systemPrompt: systemPrompt,
             userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: punctuationStyle,
             provider: provider
         )
     }
@@ -604,19 +895,42 @@ struct CleanupConfig: Codable, Sendable {
             autoPunctuation: autoPunctuation,
             systemPrompt: systemPrompt,
             userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: punctuationStyle,
             provider: provider
         )
     }
 
-    func withDefaults() -> CleanupConfig {
+    func withPromptProfiles(_ promptProfiles: [CleanupPromptProfile], selectedPromptProfileID: String) -> CleanupConfig {
         CleanupConfig(
+            enabled: enabled,
+            endpoint: endpoint,
+            model: model,
+            temperature: temperature,
+            autoPunctuation: autoPunctuation,
+            systemPrompt: systemPrompt,
+            userPromptTemplate: userPromptTemplate,
+            promptProfiles: promptProfiles,
+            selectedPromptProfileID: selectedPromptProfileID,
+            punctuationStyle: punctuationStyle,
+            provider: provider
+        ).withDefaults()
+    }
+
+    func withDefaults() -> CleanupConfig {
+        let selectedProfile = self.selectedPromptProfile
+        return CleanupConfig(
             enabled: enabled,
             endpoint: endpoint,
             model: resolvedModel,
             temperature: temperature ?? 0.0,
             autoPunctuation: autoPunctuationEnabled,
-            systemPrompt: systemPrompt ?? CleanupPromptDefaults.systemPrompt,
-            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
+            systemPrompt: selectedProfile.systemPrompt,
+            userPromptTemplate: selectedProfile.userPromptTemplate,
+            promptProfiles: resolvedPromptProfiles,
+            selectedPromptProfileID: resolvedSelectedPromptProfileID,
+            punctuationStyle: resolvedPunctuationStyle,
             provider: provider
         )
     }
@@ -635,14 +949,21 @@ struct CleanupConfig: Codable, Sendable {
             model: migratedModel,
             temperature: temperature ?? 0.0,
             autoPunctuation: autoPunctuationEnabled,
-            systemPrompt: systemPrompt ?? CleanupPromptDefaults.systemPrompt,
-            userPromptTemplate: userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
+            systemPrompt: selectedPromptProfile.systemPrompt,
+            userPromptTemplate: selectedPromptProfile.userPromptTemplate,
+            promptProfiles: resolvedPromptProfiles,
+            selectedPromptProfileID: resolvedSelectedPromptProfileID,
+            punctuationStyle: resolvedPunctuationStyle,
             provider: provider
         )
     }
 
     func refreshingPromptDefaults() -> CleanupConfig {
-        CleanupConfig(
+        let refreshedProfiles = resolvedPromptProfiles.map { profile in
+            profile.id == CleanupPromptProfile.defaultProfileID ? CleanupPromptProfile.defaultProfile : profile
+        }
+
+        return CleanupConfig(
             enabled: enabled,
             endpoint: endpoint,
             model: model,
@@ -650,8 +971,11 @@ struct CleanupConfig: Codable, Sendable {
             autoPunctuation: autoPunctuation,
             systemPrompt: usesLegacyPromptDefaults ? CleanupPromptDefaults.systemPrompt : systemPrompt,
             userPromptTemplate: usesLegacyPromptDefaults ? CleanupPromptDefaults.userPromptTemplate : userPromptTemplate,
+            promptProfiles: refreshedProfiles,
+            selectedPromptProfileID: resolvedSelectedPromptProfileID,
+            punctuationStyle: resolvedPunctuationStyle,
             provider: provider
-        )
+        ).withDefaults()
     }
 
     static let defaultConfig = CleanupConfig(
@@ -662,6 +986,9 @@ struct CleanupConfig: Codable, Sendable {
         autoPunctuation: true,
         systemPrompt: CleanupPromptDefaults.systemPrompt,
         userPromptTemplate: CleanupPromptDefaults.userPromptTemplate,
+        promptProfiles: [CleanupPromptProfile.defaultProfile],
+        selectedPromptProfileID: CleanupPromptProfile.defaultProfileID,
+        punctuationStyle: .chinese,
         provider: nil
     )
 
@@ -738,6 +1065,25 @@ struct VocabularyEntry: Codable, Sendable {
 
 struct InsertionConfig: Codable, Sendable {
     let restoreClipboard: Bool
+    let reviewBeforePaste: Bool?
+
+    var reviewBeforePasteEnabled: Bool {
+        reviewBeforePaste ?? false
+    }
+
+    func withDefaults() -> InsertionConfig {
+        InsertionConfig(
+            restoreClipboard: restoreClipboard,
+            reviewBeforePaste: reviewBeforePasteEnabled
+        )
+    }
+
+    func withReviewBeforePaste(_ enabled: Bool) -> InsertionConfig {
+        InsertionConfig(
+            restoreClipboard: restoreClipboard,
+            reviewBeforePaste: enabled
+        )
+    }
 }
 
 struct LoadedAppConfig {
@@ -788,6 +1134,16 @@ enum AppConfigLoader {
                 )
             }
 
+            if decodedConfig.needsCleanupPromptSchemaRefresh {
+                let refreshedConfig = decodedConfig.refreshedCleanupPromptSchema()
+                try save(refreshedConfig, to: configURL)
+                return LoadedAppConfig(
+                    config: refreshedConfig,
+                    url: configURL,
+                    createdDefaultConfig: false
+                )
+            }
+
             return LoadedAppConfig(config: decodedConfig, url: configURL, createdDefaultConfig: false)
         } catch {
             throw VoicePowerError.invalidConfig(reason: error.localizedDescription)
@@ -802,7 +1158,7 @@ enum AppConfigLoader {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(config)
+        let data = try encoder.encode(config.normalizedForPersistence())
         try data.write(to: url)
     }
 
@@ -843,8 +1199,19 @@ enum AppConfigLoader {
         "model": "\(CleanupConfig.defaultModel)",
         "temperature": 0.0,
         "autoPunctuation": true,
+        "punctuationStyle": "chinese",
         "systemPrompt": "\(CleanupPromptDefaults.escapedSystemPrompt)",
-        "userPromptTemplate": "\(CleanupPromptDefaults.escapedUserPromptTemplate)"
+        "userPromptTemplate": "\(CleanupPromptDefaults.escapedUserPromptTemplate)",
+        "promptProfiles": [
+          {
+            "id": "default",
+            "isBuiltIn": true,
+            "name": "Default",
+            "systemPrompt": "\(CleanupPromptDefaults.escapedSystemPrompt)",
+            "userPromptTemplate": "\(CleanupPromptDefaults.escapedUserPromptTemplate)"
+          }
+        ],
+        "selectedPromptProfileID": "default"
       },
       "vocabulary": {
         "enabled": true,
@@ -858,7 +1225,8 @@ enum AppConfigLoader {
         ]
       },
       "insertion": {
-        "restoreClipboard": true
+        "restoreClipboard": true,
+        "reviewBeforePaste": false
       }
     }
     """

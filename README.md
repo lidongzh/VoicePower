@@ -93,6 +93,12 @@ Build a distributable DMG:
 ./scripts/build_dmg.sh
 ```
 
+Build a DMG that bundles the prepared local runtime seed for another Apple Silicon Mac:
+
+```bash
+./scripts/build_dmg.sh --bundle-runtime
+```
+
 During development you can also run:
 
 ```bash
@@ -111,6 +117,12 @@ swift run VoicePower
 5. If either stage uses Groq, save a Groq API key in Settings.
 6. If either stage uses Local, let the app prepare the local runtime and models.
 
+No separate `ffmpeg` installation is required for normal VoicePower recordings. The app records supported WAV audio itself and feeds those samples directly into local Whisper.
+
+If you built with `--bundle-runtime`, the base local runtime can already be present on the target Mac after first launch. Local Whisper and cleanup models are still downloaded on demand unless you package them separately.
+
+Current DMG builds are ad-hoc signed, not notarized. On another Mac you may need to right-click the app and choose `Open` the first time.
+
 If `~/.voice-power/config.json` does not exist, VoicePower creates it automatically using [Configuration/voice-power.example.json](Configuration/voice-power.example.json) as the starting shape.
 
 ## Settings
@@ -125,7 +137,11 @@ The current Settings window includes:
 - custom model fields for both stages
 - cleanup enable toggle
 - auto punctuation toggle
+- punctuation style picker
+- cleanup prompt preset picker with new/duplicate/delete controls
+- editable system prompt and user prompt template for the selected preset
 - save recorded audio toggle
+- review-before-paste toggle
 - Groq API key field with save and clear controls
 - vocabulary editor with add/remove rows and explicit save
 
@@ -143,6 +159,9 @@ Important points:
 
 - Groq API keys are not stored in this file.
 - Provider selection is stored per stage.
+- Cleanup punctuation style is stored in the cleanup section.
+- Cleanup prompt presets are stored in the cleanup section, with the selected preset mirrored back into the legacy prompt fields.
+- Insertion settings store whether VoicePower should open a review window before placing text on the clipboard for manual paste.
 - Vocabulary mappings are stored as structured entries.
 
 Example config fields:
@@ -159,10 +178,14 @@ Example config fields:
     "provider": "local",
     "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
     "temperature": 0.0,
-    "autoPunctuation": true
+    "autoPunctuation": true,
+    "punctuationStyle": "chinese",
+    "selectedPromptProfileID": "default"
   }
 }
 ```
+
+When `reviewBeforePaste` is enabled, VoicePower does not auto-paste after dictation. Instead it opens an editor window, lets you revise the result, then stages the edited text on the clipboard and switches back to the target app for manual paste.
 
 ## Hotkeys
 
@@ -186,7 +209,9 @@ If full local-only behavior matters, keep transcription and cleanup on `Local`.
 ## Current Limitations
 
 - Text insertion is still paste-based, so clipboard restoration is best-effort for plain text.
+- In review-before-paste mode, the final edited text stays on the clipboard until you paste it or replace it.
 - First launch can be slow when the app needs to create the local Python runtime and download models.
+- The optional `--bundle-runtime` package avoids the first local runtime bootstrap, but it still does not bundle local models.
 - Simplified-Chinese normalization is still local-only.
 - This is not a true IME yet.
 - No streaming transcription or VAD yet.
@@ -194,5 +219,5 @@ If full local-only behavior matters, keep transcription and cleanup on `Local`.
 
 ## Notes For Development
 
-- Rebuilding unsigned local app bundles can invalidate previous macOS Accessibility trust, so you may need to re-grant permissions after replacing the app.
+- Rebuilding ad-hoc signed local app bundles can invalidate previous macOS Accessibility trust, so you may need to re-grant permissions after replacing the app.
 - The menu bar includes `Prepare Runtime`, `Reload Config`, and `Settings…` for quick iteration.

@@ -24,7 +24,20 @@
     "provider": "local",
     "model": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
     "temperature": 0.0,
-    "autoPunctuation": true
+    "autoPunctuation": true,
+    "punctuationStyle": "chinese",
+    "systemPrompt": "You are a bilingual dictation cleanup engine.\nYour job is to remove filler words, false starts, duplicated fragments, and obvious speech disfluencies only when it is safe.\nNever translate English into Chinese.\nNever translate Chinese into English.\nKeep code-switching intact.\nIf output contains Chinese characters, use simplified Chinese script.\nAdd punctuation when it is clearly implied by the speaker's phrasing or pauses.\nUse Chinese punctuation for Chinese spans and standard English punctuation for English spans when natural.\nDo not over-rewrite or add information.\nOutput only the cleaned final text.\nExample input: um okay 所以 tomorrow we can maybe 再看一下这个 part\nExample output: 所以 tomorrow we can 再看一下这个 part.\nExample input: uh the cleanup option 应该默认关闭因为它会改变输出\nExample output: the cleanup option 应该默认关闭，因为它会改变输出。\nExample input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢\nExample output: 这个东西为什么不会自己加上标点符号呢？如果要 disable 这个 cleanup model，该怎么做呢？",
+    "userPromptTemplate": "Clean up this dictated text without changing meaning.\nPreserve mixed English and Chinese exactly as spoken.\nAdd punctuation only when it is clearly helpful and safe.\nReturn only the final cleaned text.\n\nRaw transcript:\n{{text}}",
+    "promptProfiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "systemPrompt": "You are a bilingual dictation cleanup engine.\nYour job is to remove filler words, false starts, duplicated fragments, and obvious speech disfluencies only when it is safe.\nNever translate English into Chinese.\nNever translate Chinese into English.\nKeep code-switching intact.\nIf output contains Chinese characters, use simplified Chinese script.\nAdd punctuation when it is clearly implied by the speaker's phrasing or pauses.\nUse Chinese punctuation for Chinese spans and standard English punctuation for English spans when natural.\nDo not over-rewrite or add information.\nOutput only the cleaned final text.\nExample input: um okay 所以 tomorrow we can maybe 再看一下这个 part\nExample output: 所以 tomorrow we can 再看一下这个 part.\nExample input: uh the cleanup option 应该默认关闭因为它会改变输出\nExample output: the cleanup option 应该默认关闭，因为它会改变输出。\nExample input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢\nExample output: 这个东西为什么不会自己加上标点符号呢？如果要 disable 这个 cleanup model，该怎么做呢？",
+        "userPromptTemplate": "Clean up this dictated text without changing meaning.\nPreserve mixed English and Chinese exactly as spoken.\nAdd punctuation only when it is clearly helpful and safe.\nReturn only the final cleaned text.\n\nRaw transcript:\n{{text}}",
+        "isBuiltIn": true
+      }
+    ],
+    "selectedPromptProfileID": "default"
   },
   "vocabulary": {
     "enabled": true,
@@ -38,6 +51,7 @@
     ]
   },
   "insertion": {
-    "restoreClipboard": true
+    "restoreClipboard": true,
+    "reviewBeforePaste": false
   }
 }

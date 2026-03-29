@@ -10,6 +10,16 @@ final class TextInjector {
         self.restoreClipboard = restoreClipboard
     }
 
+    func stageForManualPaste(text: String, targeting application: NSRunningApplication?) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        if let application {
+            application.activate(options: [.activateIgnoringOtherApps])
+        }
+    }
+
     func insert(text: String, targeting application: NSRunningApplication?) throws {
         guard AXIsProcessTrusted() else {
             throw VoicePowerError.accessibilityPermissionMissing

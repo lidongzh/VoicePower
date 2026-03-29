@@ -17,6 +17,7 @@ final class RightCommandHoldManager: @unchecked Sendable {
     private let activationDelay: TimeInterval
     private let onPress: @MainActor () -> Void
     private let onRelease: @MainActor () -> Void
+    private let onCancel: @MainActor () -> Void
     private let stateQueue = DispatchQueue(label: "local.voicepower.right-command-hold")
 
     private var eventTap: CFMachPort?
@@ -29,11 +30,13 @@ final class RightCommandHoldManager: @unchecked Sendable {
     init(
         activationDelay: TimeInterval,
         onPress: @escaping @MainActor () -> Void,
-        onRelease: @escaping @MainActor () -> Void
+        onRelease: @escaping @MainActor () -> Void,
+        onCancel: @escaping @MainActor () -> Void
     ) throws {
         self.activationDelay = activationDelay
         self.onPress = onPress
         self.onRelease = onRelease
+        self.onCancel = onCancel
 
         let keyDownMask = CGEventMask(1 << CGEventType.keyDown.rawValue)
         let flagsChangedMask = CGEventMask(1 << CGEventType.flagsChanged.rawValue)
@@ -214,7 +217,7 @@ final class RightCommandHoldManager: @unchecked Sendable {
         suppressUntilRelease = true
 
         Task { @MainActor in
-            onRelease()
+            onCancel()
         }
     }
 

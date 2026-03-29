@@ -40,6 +40,7 @@ actor InferenceWorkerManager {
         let userPromptTemplate: String?
         let temperature: Double?
         let autoPunctuation: Bool?
+        let punctuationStyle: CleanupPunctuationStyle?
         let maxTokens: Int?
     }
 
@@ -116,6 +117,7 @@ actor InferenceWorkerManager {
                     userPromptTemplate: nil,
                     temperature: nil,
                     autoPunctuation: nil,
+                    punctuationStyle: nil,
                     maxTokens: nil
                 )
             },
@@ -141,6 +143,7 @@ actor InferenceWorkerManager {
                     userPromptTemplate: nil,
                     temperature: nil,
                     autoPunctuation: nil,
+                    punctuationStyle: nil,
                     maxTokens: nil
                 )
             },
@@ -172,6 +175,7 @@ actor InferenceWorkerManager {
                     userPromptTemplate: config.userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
                     temperature: config.temperature ?? 0.0,
                     autoPunctuation: config.autoPunctuationEnabled,
+                    punctuationStyle: config.resolvedPunctuationStyle,
                     maxTokens: config.autoPunctuationEnabled ? 256 : 192
                 )
             },
@@ -205,6 +209,7 @@ actor InferenceWorkerManager {
                     userPromptTemplate: nil,
                     temperature: nil,
                     autoPunctuation: nil,
+                    punctuationStyle: nil,
                     maxTokens: nil
                 )
             )

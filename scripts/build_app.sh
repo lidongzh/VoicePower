@@ -8,12 +8,27 @@ APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+RUNTIME_SEED_DIR="$RESOURCES_DIR/RuntimeSeed"
 MODULE_CACHE_DIR="$ROOT_DIR/.build/clang-module-cache"
 SWIFT_SCAN_CACHE_DIR="$ROOT_DIR/.build/swift-driver-cache"
 ICON_MASTER_PNG="$ROOT_DIR/App/VoicePower-icon.png"
 ICON_ICNS="$ROOT_DIR/App/VoicePower.icns"
 ICON_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voicepower-icon.XXXXXX")"
 ICONSET_DIR="$ICON_TMP_DIR/$APP_NAME.iconset"
+BUNDLE_RUNTIME=0
+RUNTIME_SOURCE_DIR="$HOME/Library/Application Support/VoicePower/Runtime/venv"
+
+for arg in "$@"; do
+  case "$arg" in
+    --bundle-runtime)
+      BUNDLE_RUNTIME=1
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
 
 cleanup() {
   rm -rf "$ICON_TMP_DIR"
@@ -26,6 +41,7 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 mkdir -p "$MODULE_CACHE_DIR"
 mkdir -p "$SWIFT_SCAN_CACHE_DIR"
+rm -rf "$RUNTIME_SEED_DIR"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR"
 export SWIFT_DRIVER_SWIFT_SCAN_CACHE_PATH="$SWIFT_SCAN_CACHE_DIR"
 
@@ -74,6 +90,30 @@ cp "$ROOT_DIR/scripts/mlx_cleanup_polish.py" "$RESOURCES_DIR/mlx_cleanup_polish.
 cp "$ROOT_DIR/scripts/voicepower_worker.py" "$RESOURCES_DIR/voicepower_worker.py"
 cp "$ROOT_DIR/scripts/simplify_chinese_text.py" "$RESOURCES_DIR/simplify_chinese_text.py"
 cp "$ROOT_DIR/Configuration/voice-power.example.json" "$RESOURCES_DIR/voice-power.example.json"
+
+if [[ "$BUNDLE_RUNTIME" == "1" ]]; then
+  if [[ ! -x "$RUNTIME_SOURCE_DIR/bin/python3" ]]; then
+    echo "Bundled runtime requested, but no prepared runtime was found at $RUNTIME_SOURCE_DIR" >&2
+    exit 1
+  fi
+
+  mkdir -p "$RUNTIME_SEED_DIR"
+  ditto "$RUNTIME_SOURCE_DIR" "$RUNTIME_SEED_DIR/venv"
+
+  RUNTIME_PYTHON_VERSION="$("$RUNTIME_SOURCE_DIR/bin/python3" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+  RUNTIME_ARCH="$("$RUNTIME_SOURCE_DIR/bin/python3" -c 'import platform; print(platform.machine())')"
+  RUNTIME_CREATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  cat > "$RUNTIME_SEED_DIR/manifest.json" <<EOF
+{
+  "architecture": "$RUNTIME_ARCH",
+  "pythonVersion": "$RUNTIME_PYTHON_VERSION",
+  "createdAt": "$RUNTIME_CREATED_AT",
+  "seedType": "runtime-only"
+}
+EOF
+fi
+
 chmod +x "$MACOS_DIR/$APP_NAME"
 codesign --force --deep --sign - "$APP_DIR"
 

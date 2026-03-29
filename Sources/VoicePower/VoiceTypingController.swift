@@ -73,10 +73,13 @@ final class VoiceTypingController {
     private let textNormalizer: TextNormalizer
     private let textPolisher: LocalCleanupPolisher
     private let textInjector: TextInjector
+    private let reviewWindowController: ReviewWindowController
     private let permissions: PermissionCoordinator
     private let saveAudioFiles: Bool
+    private let reviewBeforePaste: Bool
 
     private var currentTargetApplication: NSRunningApplication?
+    private var lastExternalTargetApplication: NSRunningApplication?
     private var pendingRecordings: [PendingRecording] = []
     private var isProcessingQueue = false
     private var recordingTrigger: RecordingTrigger?
@@ -89,8 +92,10 @@ final class VoiceTypingController {
         textNormalizer: TextNormalizer,
         textPolisher: LocalCleanupPolisher,
         textInjector: TextInjector,
+        reviewWindowController: ReviewWindowController,
         permissions: PermissionCoordinator,
-        saveAudioFiles: Bool
+        saveAudioFiles: Bool,
+        reviewBeforePaste: Bool
     ) {
         self.audioRecorder = audioRecorder
         self.transcriber = transcriber
@@ -98,8 +103,10 @@ final class VoiceTypingController {
         self.textNormalizer = textNormalizer
         self.textPolisher = textPolisher
         self.textInjector = textInjector
+        self.reviewWindowController = reviewWindowController
         self.permissions = permissions
         self.saveAudioFiles = saveAudioFiles
+        self.reviewBeforePaste = reviewBeforePaste
     }
 
     func toggleRecording() {
@@ -126,11 +133,23 @@ final class VoiceTypingController {
         stopRecordingAndEnqueue()
     }
 
+    func cancelHoldToTalk() {
+        guard audioRecorder.isRecording, recordingTrigger == .holdToTalk else {
+            return
+        }
+
+        audioRecorder.cancelRecording()
+        currentTargetApplication = nil
+        recordingTrigger = nil
+        clearLastError()
+        emitState()
+    }
+
     private func startRecording(trigger: RecordingTrigger) {
         do {
             try permissions.ensureReadyForRecording()
             clearLastError()
-            currentTargetApplication = NSWorkspace.shared.frontmostApplication
+            currentTargetApplication = resolvedTargetApplication()
             _ = try audioRecorder.startRecording()
             recordingTrigger = trigger
             emitState()
@@ -194,7 +213,9 @@ final class VoiceTypingController {
         let textNormalizer = textNormalizer
         let textPolisher = textPolisher
         let textInjector = textInjector
+        let reviewWindowController = reviewWindowController
         let saveAudioFiles = saveAudioFiles
+        let reviewBeforePaste = reviewBeforePaste
 
         Task { [weak self] in
             let result: Result<Void, Error>
@@ -207,7 +228,14 @@ final class VoiceTypingController {
                 let polishedText = try await textPolisher.polish(correctedTranscript)
                 let finalizedText = vocabularyCorrector.correct(polishedText)
                 let normalizedText = try textNormalizer.normalize(finalizedText)
-                try textInjector.insert(text: normalizedText, targeting: nextRecording.targetApplication)
+                if reviewBeforePaste {
+                    let reviewedText = await reviewWindowController.review(text: normalizedText)
+                    if let reviewedText {
+                        textInjector.stageForManualPaste(text: reviewedText, targeting: nextRecording.targetApplication)
+                    }
+                } else {
+                    try textInjector.insert(text: normalizedText, targeting: nextRecording.targetApplication)
+                }
                 result = .success(())
             } catch {
                 result = .failure(error)
@@ -234,6 +262,18 @@ final class VoiceTypingController {
 
     private func clearLastError() {
         lastErrorMessage = nil
+    }
+
+    private func resolvedTargetApplication() -> NSRunningApplication? {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        if frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
+            return lastExternalTargetApplication
+        }
+
+        if let frontmostApplication {
+            lastExternalTargetApplication = frontmostApplication
+        }
+        return frontmostApplication
     }
 
     private func reportRuntimeError(_ message: String) {

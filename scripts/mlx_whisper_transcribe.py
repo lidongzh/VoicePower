@@ -5,8 +5,11 @@ import contextlib
 import io
 import os
 import sys
+import wave
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 MODEL_ALIASES = {
     "mlx-community/whisper-medium": "mlx-community/whisper-medium-mlx",
@@ -80,6 +83,28 @@ def download_model(model: str) -> str:
     )
 
 
+def load_voicepower_wav(audio_path: str) -> np.ndarray:
+    with wave.open(audio_path, "rb") as wav_file:
+        channel_count = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        compression = wav_file.getcomptype()
+
+        if compression != "NONE":
+            raise ValueError("Only uncompressed WAV audio is supported")
+        if channel_count != 1:
+            raise ValueError(f"Expected mono WAV audio, got {channel_count} channels")
+        if sample_width != 2:
+            raise ValueError(f"Expected 16-bit PCM WAV audio, got {sample_width * 8}-bit")
+        if sample_rate != 16_000:
+            raise ValueError(f"Expected 16 kHz WAV audio, got {sample_rate} Hz")
+
+        pcm_frames = wav_file.readframes(wav_file.getnframes())
+
+    audio = np.frombuffer(pcm_frames, dtype=np.int16).astype(np.float32)
+    return audio / 32768.0
+
+
 def transcribe(audio_path: str, model: str, language: str) -> str:
     import mlx_whisper
 
@@ -90,12 +115,13 @@ def transcribe(audio_path: str, model: str, language: str) -> str:
     if language.lower() != "auto":
         kwargs["language"] = language
 
+    audio = load_voicepower_wav(audio_path)
     transcript_output = io.StringIO()
     with contextlib.redirect_stdout(transcript_output), contextlib.redirect_stderr(transcript_output):
         try:
-            result = mlx_whisper.transcribe(audio_path, verbose=False, **kwargs)
+            result = mlx_whisper.transcribe(audio, verbose=False, **kwargs)
         except TypeError:
-            result = mlx_whisper.transcribe(audio_path, **kwargs)
+            result = mlx_whisper.transcribe(audio, **kwargs)
 
     text = result.get("text", "")
     return text.strip()

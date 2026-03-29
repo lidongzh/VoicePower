@@ -19,7 +19,11 @@ struct LocalCleanupPolisher: Sendable {
         let resolvedConfig = config.withDefaults()
 
         guard resolvedConfig.enabled else {
-            return DictationPostProcessor.format(rawText, autoPunctuation: resolvedConfig.autoPunctuationEnabled)
+            return DictationPostProcessor.format(
+                rawText,
+                autoPunctuation: resolvedConfig.autoPunctuationEnabled,
+                punctuationStyle: resolvedConfig.resolvedPunctuationStyle
+            )
         }
 
         let generatedText: String
@@ -38,7 +42,8 @@ struct LocalCleanupPolisher: Sendable {
                 model: resolvedConfig.resolvedModel,
                 systemPrompt: resolvedConfig.systemPrompt ?? CleanupPromptDefaults.systemPrompt,
                 userPromptTemplate: resolvedConfig.userPromptTemplate ?? CleanupPromptDefaults.userPromptTemplate,
-                autoPunctuation: resolvedConfig.autoPunctuationEnabled
+                autoPunctuation: resolvedConfig.autoPunctuationEnabled,
+                punctuationStyle: resolvedConfig.resolvedPunctuationStyle
             )
             generatedText = try await groqClient.cleanup(
                 rawText: rawText,
@@ -53,7 +58,11 @@ struct LocalCleanupPolisher: Sendable {
         }
 
         let validatedText = validatedCleanupOutput(rawText: rawText, cleanedText: generatedText)
-        return DictationPostProcessor.format(validatedText, autoPunctuation: resolvedConfig.autoPunctuationEnabled)
+        return DictationPostProcessor.format(
+            validatedText,
+            autoPunctuation: resolvedConfig.autoPunctuationEnabled,
+            punctuationStyle: resolvedConfig.resolvedPunctuationStyle
+        )
     }
 
     private func polishWithLegacyOllama(
@@ -129,14 +138,17 @@ struct LocalCleanupPolisher: Sendable {
         model: String,
         systemPrompt: String,
         userPromptTemplate: String,
-        autoPunctuation: Bool
+        autoPunctuation: Bool,
+        punctuationStyle: CleanupPunctuationStyle
     ) -> (systemPrompt: String, userPrompt: String) {
         var finalSystemPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         var finalUserPrompt = makePrompt(rawText, template: userPromptTemplate)
 
         if autoPunctuation {
-            finalSystemPrompt = "\(finalSystemPrompt)\n\n\(punctuationSystemAppendix)".trimmingCharacters(in: .whitespacesAndNewlines)
-            finalUserPrompt = "\(punctuationUserAppendix)\n\n\(finalUserPrompt)".trimmingCharacters(in: .whitespacesAndNewlines)
+            finalSystemPrompt = "\(finalSystemPrompt)\n\n\(punctuationSystemAppendix(for: punctuationStyle))"
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            finalUserPrompt = "\(punctuationUserAppendix(for: punctuationStyle))\n\n\(finalUserPrompt)"
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             finalSystemPrompt = "\(finalSystemPrompt)\nDo not add punctuation unless the original transcript already makes it obvious."
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,34 +167,73 @@ struct LocalCleanupPolisher: Sendable {
         return (finalSystemPrompt, finalUserPrompt)
     }
 
-    private static let punctuationSystemAppendix = """
-    When adding punctuation:
-    - Preserve every original word in the same order.
-    - Never translate English into Chinese.
-    - Never translate Chinese into English.
-    - Never add or remove content except safe punctuation and spacing around punctuation.
-    - Keep English words separated by spaces.
-    - Do not insert spaces between Chinese and English words.
-    - Use Chinese punctuation after Chinese text.
-    - Use English punctuation after English text.
-    - Add one space after English punctuation when another token follows.
-    - Do not add spaces after Chinese punctuation.
+    private static func punctuationSystemAppendix(for style: CleanupPunctuationStyle) -> String {
+        switch style {
+        case .chinese:
+            return """
+            When adding punctuation:
+            - Preserve every original word in the same order.
+            - Never translate English into Chinese.
+            - Never translate Chinese into English.
+            - Never add or remove content except safe punctuation and spacing around punctuation.
+            - Keep English words separated by spaces.
+            - Do not insert spaces between Chinese and English words.
+            - Use Chinese punctuation after Chinese text.
+            - Use English punctuation after English text.
+            - Add one space after English punctuation when another token follows.
+            - Do not add spaces after Chinese punctuation.
 
-    Examples:
-    Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
-    Output: 标点符号还是不行。请继续用这个sample测试，直到它可以正确加上标点。
+            Examples:
+            Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
+            Output: 标点符号还是不行。请继续用这个sample测试，直到它可以正确加上标点。
 
-    Input: 今天review API docs然后更新settings页面
-    Output: 今天review API docs，然后更新settings页面。
+            Input: 今天review API docs然后更新settings页面
+            Output: 今天review API docs，然后更新settings页面。
 
-    Input: Should the app open the browser directly instead of keeping the native setup window for onboarding
-    Output: Should the app open the browser directly instead of keeping the native setup window for onboarding?
-    """
+            Input: Should the app open the browser directly instead of keeping the native setup window for onboarding
+            Output: Should the app open the browser directly instead of keeping the native setup window for onboarding?
+            """
+        case .english:
+            return """
+            When adding punctuation:
+            - Preserve every original word in the same order.
+            - Never translate English into Chinese.
+            - Never translate Chinese into English.
+            - Never add or remove content except safe punctuation and spacing around punctuation.
+            - Use ASCII punctuation only: comma, period, question mark, and exclamation mark.
+            - Keep English punctuation attached to the word before it. Do not add a space before English punctuation.
+            - Use one space after English punctuation when another token follows, including Chinese text.
+            - Never replace English punctuation with Chinese punctuation marks.
 
-    private static let punctuationUserAppendix = """
-    Add sentence boundaries and punctuation when it is clearly helpful and safe.
-    Do not rewrite, summarize, or improve word choice.
-    """
+            Examples:
+            Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
+            Output: 标点符号还是不行. 请继续用这个sample测试, 直到它可以正确加上标点.
+
+            Input: 今天review API docs然后更新settings页面
+            Output: 今天review API docs, 然后更新settings页面.
+
+            Input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢
+            Output: 这个东西为什么不会自己加上标点符号呢? 如果要 disable 这个 cleanup model, 该怎么做呢?
+            """
+        }
+    }
+
+    private static func punctuationUserAppendix(for style: CleanupPunctuationStyle) -> String {
+        switch style {
+        case .chinese:
+            return """
+            Add sentence boundaries and punctuation when it is clearly helpful and safe.
+            Do not rewrite, summarize, or improve word choice.
+            """
+        case .english:
+            return """
+            Add sentence boundaries and punctuation when it is clearly helpful and safe.
+            Use English punctuation only.
+            Keep English punctuation attached to the word before it, with one space after it when another token follows.
+            Do not rewrite, summarize, or improve word choice.
+            """
+        }
+    }
 }
 
 private struct OllamaGenerateRequest: Encodable {

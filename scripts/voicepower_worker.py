@@ -8,8 +8,11 @@ import os
 import re
 import sys
 import traceback
+import wave
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 
 WHISPER_MODEL_ALIASES = {
@@ -42,6 +45,33 @@ Output: Should the app open the browser directly instead of keeping the native s
 """
 
 PUNCTUATION_USER_APPENDIX = """Add sentence boundaries and punctuation when it is clearly helpful and safe.
+Do not rewrite, summarize, or improve word choice.
+"""
+
+ENGLISH_PUNCTUATION_SYSTEM_APPENDIX = """When adding punctuation:
+- Preserve every original word in the same order.
+- Never translate English into Chinese.
+- Never translate Chinese into English.
+- Never add or remove content except safe punctuation and spacing around punctuation.
+- Use ASCII punctuation only: comma, period, question mark, and exclamation mark.
+- Keep English punctuation attached to the word before it. Do not add a space before English punctuation.
+- Use one space after English punctuation when another token follows, including Chinese text.
+- Never replace English punctuation with Chinese punctuation marks.
+
+Examples:
+Input: 标点符号还是不行请继续用这个sample测试直到它可以正确加上标点
+Output: 标点符号还是不行. 请继续用这个sample测试, 直到它可以正确加上标点.
+
+Input: 今天review API docs然后更新settings页面
+Output: 今天review API docs, 然后更新settings页面.
+
+Input: 这个东西为什么不会自己加上标点符号呢如果要disable这个cleanup model该怎么做呢
+Output: 这个东西为什么不会自己加上标点符号呢? 如果要 disable 这个 cleanup model, 该怎么做呢?
+"""
+
+ENGLISH_PUNCTUATION_USER_APPENDIX = """Add sentence boundaries and punctuation when it is clearly helpful and safe.
+Use English punctuation only.
+Keep English punctuation attached to the word before it, with one space after it when another token follows.
 Do not rewrite, summarize, or improve word choice.
 """
 
@@ -107,6 +137,28 @@ def normalize_transcript(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
 
 
+def load_voicepower_wav(audio_path: str) -> np.ndarray:
+    with wave.open(audio_path, "rb") as wav_file:
+        channel_count = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        compression = wav_file.getcomptype()
+
+        if compression != "NONE":
+            raise ValueError("Only uncompressed WAV audio is supported")
+        if channel_count != 1:
+            raise ValueError(f"Expected mono WAV audio, got {channel_count} channels")
+        if sample_width != 2:
+            raise ValueError(f"Expected 16-bit PCM WAV audio, got {sample_width * 8}-bit")
+        if sample_rate != 16_000:
+            raise ValueError(f"Expected 16 kHz WAV audio, got {sample_rate} Hz")
+
+        pcm_frames = wav_file.readframes(wav_file.getnframes())
+
+    audio = np.frombuffer(pcm_frames, dtype=np.int16).astype(np.float32)
+    return audio / 32768.0
+
+
 def is_qwen3_model(model_path_or_repo: str) -> bool:
     return "qwen3" in model_path_or_repo.lower()
 
@@ -119,13 +171,23 @@ def cleanup_output(text: str) -> str:
     return cleaned
 
 
-def build_cleanup_prompt(raw_text: str, system_prompt: str, user_prompt_template: str, auto_punctuation: bool) -> tuple[str, str]:
+def build_cleanup_prompt(
+    raw_text: str,
+    system_prompt: str,
+    user_prompt_template: str,
+    auto_punctuation: bool,
+    punctuation_style: str,
+) -> tuple[str, str]:
     final_system_prompt = system_prompt.strip()
     final_user_prompt = user_prompt_template.replace("{{text}}", raw_text)
 
     if auto_punctuation:
-        final_system_prompt = f"{final_system_prompt}\n\n{PUNCTUATION_SYSTEM_APPENDIX}".strip()
-        final_user_prompt = f"{PUNCTUATION_USER_APPENDIX}\n\n{final_user_prompt}".strip()
+        if punctuation_style == "english":
+            final_system_prompt = f"{final_system_prompt}\n\n{ENGLISH_PUNCTUATION_SYSTEM_APPENDIX}".strip()
+            final_user_prompt = f"{ENGLISH_PUNCTUATION_USER_APPENDIX}\n\n{final_user_prompt}".strip()
+        else:
+            final_system_prompt = f"{final_system_prompt}\n\n{PUNCTUATION_SYSTEM_APPENDIX}".strip()
+            final_user_prompt = f"{PUNCTUATION_USER_APPENDIX}\n\n{final_user_prompt}".strip()
     else:
         final_system_prompt = (
             f"{final_system_prompt}\n"
@@ -173,9 +235,10 @@ class WorkerState:
         if language.lower() != "auto":
             kwargs["language"] = language
 
+        audio = load_voicepower_wav(audio_path)
         transcript_output = io.StringIO()
         with contextlib.redirect_stdout(transcript_output), contextlib.redirect_stderr(transcript_output):
-            result = mlx_whisper.transcribe(audio_path, **kwargs)
+            result = mlx_whisper.transcribe(audio, **kwargs)
 
         text = normalize_transcript(result.get("text", ""))
         if not text:
@@ -191,6 +254,7 @@ class WorkerState:
         user_prompt_template: str,
         temperature: float,
         auto_punctuation: bool,
+        punctuation_style: str,
         max_tokens: int,
     ) -> dict:
         if not raw_text.strip():
@@ -202,6 +266,7 @@ class WorkerState:
             system_prompt=system_prompt,
             user_prompt_template=user_prompt_template,
             auto_punctuation=auto_punctuation,
+            punctuation_style=punctuation_style,
         )
 
         generated_text = self._generate_cleanup_text(
@@ -377,6 +442,7 @@ def main() -> int:
                     user_prompt_template=request["userPromptTemplate"],
                     temperature=float(request.get("temperature", 0.0)),
                     auto_punctuation=bool(request.get("autoPunctuation", True)),
+                    punctuation_style=str(request.get("punctuationStyle", "chinese")),
                     max_tokens=int(request.get("maxTokens", 256)),
                 )
             elif method == "health":

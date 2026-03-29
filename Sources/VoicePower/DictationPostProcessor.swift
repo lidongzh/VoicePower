@@ -1,19 +1,20 @@
 import Foundation
 
 enum DictationPostProcessor {
-    static func format(_ text: String, autoPunctuation: Bool) -> String {
+    static func format(_ text: String, autoPunctuation: Bool, punctuationStyle: CleanupPunctuationStyle) -> String {
         var result = normalizeWhitespace(in: text)
         result = normalizeMixedLanguageSpacing(in: result)
+        result = normalizePreferredPunctuationCharacters(in: result, punctuationStyle: punctuationStyle)
         guard autoPunctuation else {
-            return result
+            return cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
         }
 
-        result = normalizeListPunctuation(in: result)
-        result = addQuestionBreaks(in: result)
-        result = addSentenceBreaks(in: result)
-        result = addClauseCommas(in: result)
-        result = addTerminalPunctuation(in: result)
-        result = cleanupSpacingAroundPunctuation(in: result)
+        result = normalizeListPunctuation(in: result, punctuationStyle: punctuationStyle)
+        result = addQuestionBreaks(in: result, punctuationStyle: punctuationStyle)
+        result = addSentenceBreaks(in: result, punctuationStyle: punctuationStyle)
+        result = addClauseCommas(in: result, punctuationStyle: punctuationStyle)
+        result = addTerminalPunctuation(in: result, punctuationStyle: punctuationStyle)
+        result = cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
         return result
     }
 
@@ -29,26 +30,41 @@ enum DictationPostProcessor {
             .replacingOccurrences(of: "([A-Za-z0-9])\\s+(\\p{Han})", with: "$1$2", options: .regularExpression)
     }
 
-    private static func normalizeListPunctuation(in text: String) -> String {
+    private static func normalizePreferredPunctuationCharacters(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
+        guard punctuationStyle == .english else {
+            return text
+        }
+
+        return text
+            .replacingOccurrences(of: "，", with: ",")
+            .replacingOccurrences(of: "。", with: ".")
+            .replacingOccurrences(of: "？", with: "?")
+            .replacingOccurrences(of: "！", with: "!")
+            .replacingOccurrences(of: "、", with: ",")
+            .replacingOccurrences(of: "：", with: ":")
+            .replacingOccurrences(of: "；", with: ";")
+            .replacingOccurrences(of: "（", with: "(")
+            .replacingOccurrences(of: "）", with: ")")
+    }
+
+    private static func normalizeListPunctuation(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         var result = ""
         var index = text.startIndex
 
         while index < text.endIndex {
             let character = text[index]
 
-            if character == "," {
+            if character == "," || character == "、" {
                 let previousCharacter = previousNonWhitespaceCharacter(before: index, in: text)
                 let nextIndex = text.index(after: index)
                 let nextCharacter = nextNonWhitespaceCharacter(from: nextIndex, in: text)
 
                 if let previousCharacter, nextCharacter != nil {
-                    switch punctuationStyle(for: previousCharacter) {
-                    case .cjk:
+                    switch punctuationMark(for: .comma, previousCharacter: previousCharacter, punctuationStyle: punctuationStyle) {
+                    case "，":
                         result.append("、")
-                    case .latin:
+                    default:
                         result.append(", ")
-                    case nil:
-                        result.append(",")
                     }
                 } else {
                     result.append(",")
@@ -63,10 +79,13 @@ enum DictationPostProcessor {
         return result
     }
 
-    private static func addQuestionBreaks(in text: String) -> String {
+    private static func addQuestionBreaks(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         var result = text
         let patterns: [(String, String)] = [
-            ("([吗呢么呀])(?=(如果|我想|怎么|为什么|能不能|可不可以|要不要|是否|还有|那|另外))", "$1？"),
+            (
+                "([吗呢么呀])(?=(如果|我想|怎么|为什么|能不能|可不可以|要不要|是否|还有|那|另外))",
+                punctuationStyle == .english ? "$1? " : "$1？"
+            ),
             ("(\\b(?:why|how|what|when|where|who|can|could|would|should|do|does|did|is|are|will)\\b[^.?!。！？]*)(?=\\b(?:if|then|also|and)\\b)", "$1? "),
         ]
 
@@ -77,7 +96,7 @@ enum DictationPostProcessor {
         return result
     }
 
-    private static func addSentenceBreaks(in text: String) -> String {
+    private static func addSentenceBreaks(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         struct BoundaryRule {
             let trigger: String
             let kind: BoundaryKind
@@ -132,17 +151,17 @@ enum DictationPostProcessor {
                     continue
                 }
 
-                let mark = punctuationMark(for: rule.kind, previousCharacter: previousCharacter)
+                let mark = punctuationMark(for: rule.kind, previousCharacter: previousCharacter, punctuationStyle: punctuationStyle)
                 result.insert(contentsOf: mark, at: triggerStart)
                 let nextStart = result.index(triggerStart, offsetBy: mark.count + rule.trigger.count, limitedBy: result.endIndex) ?? result.endIndex
                 searchRange = nextStart..<result.endIndex
             }
         }
 
-        return addEnglishEntitySentenceBreaks(in: result)
+        return addEnglishEntitySentenceBreaks(in: result, punctuationStyle: punctuationStyle)
     }
 
-    private static func addEnglishEntitySentenceBreaks(in text: String) -> String {
+    private static func addEnglishEntitySentenceBreaks(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         let predicatePattern = "(非常|很|也|最|真|特别|喜欢|觉得|说|想|看|去|是|会|正在|开始|继续|需要)"
         let pattern = "([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,2})(?=\(predicatePattern))"
 
@@ -168,7 +187,7 @@ enum DictationPostProcessor {
                 continue
             }
 
-            let mark = punctuationMark(for: .sentence, previousCharacter: previousCharacter)
+            let mark = punctuationMark(for: .sentence, previousCharacter: previousCharacter, punctuationStyle: punctuationStyle)
             result.insert(contentsOf: mark, at: triggerStart)
             let nextStart = result.index(triggerStart, offsetBy: mark.count + result.distance(from: foundRange.lowerBound, to: foundRange.upperBound), limitedBy: result.endIndex) ?? result.endIndex
             searchRange = nextStart..<result.endIndex
@@ -177,13 +196,18 @@ enum DictationPostProcessor {
         return result
     }
 
-    private static func addClauseCommas(in text: String) -> String {
+    private static func addClauseCommas(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         var result = text
         let chineseConnectors = ["因为", "所以", "但是", "不过", "然后", "而且", "如果", "其实", "另外", "同时", "比如"]
+        let chineseConnectorPrefix = punctuationStyle == .english ? ", " : "，"
 
         for connector in chineseConnectors {
             let pattern = "(?<!^)(?<![，。！？,.!?、\\s])\(NSRegularExpression.escapedPattern(for: connector))"
-            result = result.replacingOccurrences(of: pattern, with: "，\(connector)", options: .regularExpression)
+            result = result.replacingOccurrences(
+                of: pattern,
+                with: "\(chineseConnectorPrefix)\(connector)",
+                options: .regularExpression
+            )
         }
 
         result = result.replacingOccurrences(
@@ -195,7 +219,7 @@ enum DictationPostProcessor {
         return result
     }
 
-    private static func addTerminalPunctuation(in text: String) -> String {
+    private static func addTerminalPunctuation(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
         guard let lastScalar = text.unicodeScalars.last else {
             return text
         }
@@ -210,6 +234,14 @@ enum DictationPostProcessor {
             options: [.regularExpression, .caseInsensitive]
         ) != nil
 
+        if punctuationStyle == .english {
+            if looksLikeQuestion {
+                return text + "?"
+            }
+
+            return text + "."
+        }
+
         let terminalStyle = terminalPunctuationStyle(for: text)
 
         if looksLikeQuestion {
@@ -223,17 +255,28 @@ enum DictationPostProcessor {
         return text + "."
     }
 
-    private static func cleanupSpacingAroundPunctuation(in text: String) -> String {
-        text
+    private static func cleanupSpacingAroundPunctuation(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
+        let normalized = text
             .replacingOccurrences(of: "\\s+([，。！？、,.!?])", with: "$1", options: .regularExpression)
             .replacingOccurrences(of: "([，。！？、])\\s+", with: "$1", options: .regularExpression)
+
+        if punctuationStyle == .english {
+            return normalized
+                .replacingOccurrences(of: "\\s+([,.?!:;])", with: "$1", options: .regularExpression)
+                .replacingOccurrences(of: "(?<!\\d)([.,])\\s*(?=[A-Za-z\\p{Han}])", with: "$1 ", options: .regularExpression)
+                .replacingOccurrences(of: "([?!:;])\\s*(?=[A-Za-z0-9\\p{Han}])", with: "$1 ", options: .regularExpression)
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return normalized
             .replacingOccurrences(of: "([,.?!])(?=[A-Za-z\\p{Han}])", with: "$1 ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
-private enum PunctuationStyle {
+private enum ScriptPunctuationStyle {
     case cjk
     case latin
 }
@@ -261,7 +304,7 @@ private extension String {
     }
 }
 
-private func punctuationStyle(for character: Character) -> PunctuationStyle? {
+private func scriptPunctuationStyle(for character: Character) -> ScriptPunctuationStyle? {
     if character.unicodeScalars.contains(where: { $0.properties.isIdeographic }) {
         return .cjk
     }
@@ -273,7 +316,7 @@ private func punctuationStyle(for character: Character) -> PunctuationStyle? {
     return nil
 }
 
-private func terminalPunctuationStyle(for text: String) -> PunctuationStyle {
+private func terminalPunctuationStyle(for text: String) -> ScriptPunctuationStyle {
     var index = text.endIndex
     while index > text.startIndex {
         index = text.index(before: index)
@@ -282,14 +325,27 @@ private func terminalPunctuationStyle(for text: String) -> PunctuationStyle {
             continue
         }
 
-        return punctuationStyle(for: character) ?? .latin
+        return scriptPunctuationStyle(for: character) ?? .latin
     }
 
     return .latin
 }
 
-private func punctuationMark(for kind: BoundaryKind, previousCharacter: Character) -> String {
-    switch (kind, punctuationStyle(for: previousCharacter) ?? .latin) {
+private func punctuationMark(
+    for kind: BoundaryKind,
+    previousCharacter: Character,
+    punctuationStyle: CleanupPunctuationStyle
+) -> String {
+    if punctuationStyle == .english {
+        switch kind {
+        case .sentence:
+            return ". "
+        case .comma:
+            return ", "
+        }
+    }
+
+    switch (kind, scriptPunctuationStyle(for: previousCharacter) ?? .latin) {
     case (.sentence, .cjk):
         return "。"
     case (.sentence, .latin):

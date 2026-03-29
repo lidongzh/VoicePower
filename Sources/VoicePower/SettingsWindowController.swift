@@ -95,14 +95,19 @@ enum VoicePowerModelCatalog {
 }
 
 @MainActor
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NSTextFieldDelegate {
     var onTranscriptionProviderChange: ((InferenceProvider) -> Void)?
     var onWhisperModelChange: ((String) -> Void)?
     var onCleanupProviderChange: ((InferenceProvider) -> Void)?
     var onCleanupModelChange: ((String) -> Void)?
     var onCleanupEnabledChange: ((Bool) -> Void)?
     var onAutoPunctuationChange: ((Bool) -> Void)?
+    var onCleanupPunctuationStyleChange: ((CleanupPunctuationStyle) -> Void)?
+    var onCleanupPromptProfilesChange: (([CleanupPromptProfile], String) -> Void)?
     var onSaveAudioChange: ((Bool) -> Void)?
+    var onReviewBeforePasteChange: ((Bool) -> Void)?
+    var onHoldToTalkEnabledChange: ((Bool) -> Void)?
+    var onHoldToTalkDelayChange: ((Int) -> Void)?
     var onVocabularySave: ((Bool, String) -> Void)?
     var onPrepareRuntime: (() -> Void)?
     var onSaveGroqAPIKey: ((String) -> Void)?
@@ -122,15 +127,28 @@ final class SettingsWindowController: NSWindowController {
     private let clearGroqAPIKeyButton = NSButton(title: "Clear Groq API Key", target: nil, action: nil)
     private let cleanupEnabledCheckbox = NSButton(checkboxWithTitle: "Enable cleanup", target: nil, action: nil)
     private let autoPunctuationCheckbox = NSButton(checkboxWithTitle: "Auto punctuation", target: nil, action: nil)
+    private let punctuationStylePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let promptProfilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let newPromptProfileButton = NSButton(title: "New Prompt", target: nil, action: nil)
+    private let duplicatePromptProfileButton = NSButton(title: "Duplicate", target: nil, action: nil)
+    private let deletePromptProfileButton = NSButton(title: "Delete", target: nil, action: nil)
+    private let promptNameField = NSTextField()
+    private let systemPromptTextView = NSTextView()
+    private let userPromptTemplateTextView = NSTextView()
     private let saveAudioCheckbox = NSButton(checkboxWithTitle: "Save recorded audio files", target: nil, action: nil)
+    private let reviewBeforePasteCheckbox = NSButton(checkboxWithTitle: "Review text before paste", target: nil, action: nil)
+    private let holdToTalkEnabledCheckbox = NSButton(checkboxWithTitle: "Enable right Command hold-to-talk", target: nil, action: nil)
+    private let holdToTalkDelayPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let vocabularyEnabledCheckbox = NSButton(checkboxWithTitle: "Enable vocabulary corrections", target: nil, action: nil)
     private let runtimeStatusLabel = NSTextField(labelWithString: "Runtime: Pending")
     private let workerStatusLabel = NSTextField(labelWithString: "Worker: Pending")
     private let whisperStatusLabel = NSTextField(labelWithString: "Whisper model: Pending Download")
     private let cleanupStatusLabel = NSTextField(labelWithString: "Cleanup model: Optional")
     private let groqAPIKeyStatusLabel = NSTextField(labelWithString: "Groq API key: Not Saved")
+    private let holdToTalkNoteLabel = NSTextField(labelWithString: "Disable this if you use right Command shortcuts. A longer delay reduces accidental trigger conflicts.")
     private let setupNoteLabel = NSTextField(labelWithString: "Changing providers and models updates the app config immediately. Use “Download Selected Local Models” to prefetch only the local runtime and models still in use.")
     private let groqNoteLabel = NSTextField(labelWithString: "When Groq is selected, recorded audio or cleanup text is sent to Groq for inference. The Groq API key is stored in this Mac’s Keychain, not in the config file.")
+    private let promptPresetNoteLabel = NSTextField(labelWithString: "Use {{text}} in the user prompt template. Default is built in and read-only; duplicate it before editing.")
     private let vocabularyNoteLabel = NSTextField(labelWithString: "Vocabulary entries stay on this Mac only. Add one mapping per row. Use | between aliases.")
     private let addVocabularyButton = NSButton(title: "Add Mapping", target: nil, action: nil)
     private let downloadButton = NSButton(title: "Download Selected Local Models", target: nil, action: nil)
@@ -140,11 +158,19 @@ final class SettingsWindowController: NSWindowController {
 
     private var whisperOptions: [ModelOption] = VoicePowerModelCatalog.localWhisperOptions
     private var cleanupOptions: [ModelOption] = VoicePowerModelCatalog.localCleanupOptions
+    private let defaultHoldToTalkDelayOptions = [180, 300, 500, 800]
+    private var holdToTalkDelayOptions: [Int] = [180, 300, 500, 800]
     private var vocabularyRows: [VocabularyMappingRow] = []
     private var currentTranscriptionProvider: InferenceProvider = .local
     private var currentCleanupProvider: InferenceProvider = .local
+    private var currentCleanupPunctuationStyle: CleanupPunctuationStyle = .chinese
+    private var currentCleanupPromptProfiles: [CleanupPromptProfile] = [CleanupPromptProfile.defaultProfile]
+    private var currentSelectedCleanupPromptProfileID = CleanupPromptProfile.defaultProfileID
+    private var currentHoldToTalkEnabled = HoldToTalkConfig.defaultConfig.enabled
+    private var currentHoldToTalkDelayMilliseconds = HoldToTalkConfig.defaultConfig.activationDelayMilliseconds ?? 180
     private var runtimePreparationNeeded = true
     private var isPreparingRuntime = false
+    private var isApplyingConfig = false
 
     init() {
         let window = NSWindow(
@@ -174,8 +200,16 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func apply(config: AppConfig, hasGroqAPIKey: Bool) {
+        isApplyingConfig = true
+        defer { isApplyingConfig = false }
+
         currentTranscriptionProvider = config.resolvedTranscription.resolvedProvider
         currentCleanupProvider = config.resolvedCleanup.resolvedProvider
+        currentCleanupPunctuationStyle = config.resolvedCleanup.resolvedPunctuationStyle
+        currentCleanupPromptProfiles = config.resolvedCleanup.resolvedPromptProfiles
+        currentSelectedCleanupPromptProfileID = config.resolvedCleanup.resolvedSelectedPromptProfileID
+        currentHoldToTalkEnabled = config.resolvedHoldToTalk.enabled
+        currentHoldToTalkDelayMilliseconds = config.resolvedHoldToTalk.activationDelayMilliseconds ?? 180
         runtimePreparationNeeded = config.localRuntimeRequirements.needsPreparation
 
         let transcriptionModel = config.resolvedTranscription.resolvedModel
@@ -205,10 +239,16 @@ final class SettingsWindowController: NSWindowController {
         ) ? cleanupModel : ""
         cleanupEnabledCheckbox.state = config.cleanupEnabled ? .on : .off
         autoPunctuationCheckbox.state = config.resolvedCleanup.autoPunctuationEnabled ? .on : .off
+        repopulatePunctuationStylePopup(selected: currentCleanupPunctuationStyle)
         saveAudioCheckbox.state = config.saveAudioFilesEnabled ? .on : .off
+        reviewBeforePasteCheckbox.state = config.reviewBeforePasteEnabled ? .on : .off
+        holdToTalkEnabledCheckbox.state = currentHoldToTalkEnabled ? .on : .off
+        repopulateHoldToTalkDelayPopup(selectedMilliseconds: currentHoldToTalkDelayMilliseconds)
+        updateHoldToTalkControlsState()
         vocabularyEnabledCheckbox.state = config.resolvedVocabulary.enabled ? .on : .off
         setVocabularyRows(from: config.resolvedVocabulary.entries)
         setGroqAPIKeySaved(hasGroqAPIKey)
+        refreshCleanupPromptProfileUI()
         updateCustomModelPlaceholders()
         updateRuntimePreparationControlState()
     }
@@ -255,11 +295,17 @@ final class SettingsWindowController: NSWindowController {
         setupNoteLabel.maximumNumberOfLines = 0
         groqNoteLabel.lineBreakMode = .byWordWrapping
         groqNoteLabel.maximumNumberOfLines = 0
+        promptPresetNoteLabel.lineBreakMode = .byWordWrapping
+        promptPresetNoteLabel.maximumNumberOfLines = 0
         vocabularyNoteLabel.lineBreakMode = .byWordWrapping
         vocabularyNoteLabel.maximumNumberOfLines = 0
+        holdToTalkNoteLabel.lineBreakMode = .byWordWrapping
+        holdToTalkNoteLabel.maximumNumberOfLines = 0
         setupNoteLabel.textColor = .secondaryLabelColor
         groqNoteLabel.textColor = .secondaryLabelColor
+        promptPresetNoteLabel.textColor = .secondaryLabelColor
         vocabularyNoteLabel.textColor = .secondaryLabelColor
+        holdToTalkNoteLabel.textColor = .secondaryLabelColor
         runtimeStatusLabel.textColor = .secondaryLabelColor
         workerStatusLabel.textColor = .secondaryLabelColor
         whisperStatusLabel.textColor = .secondaryLabelColor
@@ -277,9 +323,14 @@ final class SettingsWindowController: NSWindowController {
         configureTextField(whisperCustomModelField)
         configureTextField(cleanupCustomModelField)
         configureTextField(groqAPIKeyField)
+        configureTextField(promptNameField)
+        configurePromptTextView(systemPromptTextView)
+        configurePromptTextView(userPromptTemplateTextView)
 
         repopulateProviderPopup(transcriptionProviderPopup, selected: .local)
         repopulateProviderPopup(cleanupProviderPopup, selected: .local)
+        repopulatePunctuationStylePopup(selected: .chinese)
+        repopulateHoldToTalkDelayPopup(selectedMilliseconds: currentHoldToTalkDelayMilliseconds)
         transcriptionProviderPopup.target = self
         transcriptionProviderPopup.action = #selector(handleTranscriptionProviderChanged)
         whisperModelPopup.target = self
@@ -297,8 +348,27 @@ final class SettingsWindowController: NSWindowController {
         cleanupEnabledCheckbox.action = #selector(handleCleanupEnabledChanged)
         autoPunctuationCheckbox.target = self
         autoPunctuationCheckbox.action = #selector(handleAutoPunctuationChanged)
+        punctuationStylePopup.target = self
+        punctuationStylePopup.action = #selector(handleCleanupPunctuationStyleChanged)
+        promptProfilePopup.target = self
+        promptProfilePopup.action = #selector(handlePromptProfileChanged)
+        newPromptProfileButton.target = self
+        newPromptProfileButton.action = #selector(handleAddPromptProfile)
+        duplicatePromptProfileButton.target = self
+        duplicatePromptProfileButton.action = #selector(handleDuplicatePromptProfile)
+        deletePromptProfileButton.target = self
+        deletePromptProfileButton.action = #selector(handleDeletePromptProfile)
+        holdToTalkEnabledCheckbox.target = self
+        holdToTalkEnabledCheckbox.action = #selector(handleHoldToTalkEnabledChanged)
+        holdToTalkDelayPopup.target = self
+        holdToTalkDelayPopup.action = #selector(handleHoldToTalkDelayChanged)
+        promptNameField.delegate = self
+        systemPromptTextView.delegate = self
+        userPromptTemplateTextView.delegate = self
         saveAudioCheckbox.target = self
         saveAudioCheckbox.action = #selector(handleSaveAudioChanged)
+        reviewBeforePasteCheckbox.target = self
+        reviewBeforePasteCheckbox.action = #selector(handleReviewBeforePasteChanged)
         addVocabularyButton.target = self
         addVocabularyButton.action = #selector(handleAddVocabularyRow)
         saveVocabularyButton.target = self
@@ -322,6 +392,9 @@ final class SettingsWindowController: NSWindowController {
         stack.addArrangedSubview(workerStatusLabel)
         stack.addArrangedSubview(whisperStatusLabel)
         stack.addArrangedSubview(cleanupStatusLabel)
+        stack.addArrangedSubview(holdToTalkEnabledCheckbox)
+        stack.addArrangedSubview(makeLabeledRow(label: "Hold-to-talk delay", control: holdToTalkDelayPopup))
+        stack.addArrangedSubview(holdToTalkNoteLabel)
         stack.addArrangedSubview(makeLabeledRow(label: "Whisper provider", control: transcriptionProviderPopup))
         stack.addArrangedSubview(makeLabeledRow(label: "Whisper model", control: whisperModelPopup))
         stack.addArrangedSubview(makeCustomModelRow(field: whisperCustomModelField, button: whisperCustomModelButton))
@@ -330,7 +403,15 @@ final class SettingsWindowController: NSWindowController {
         stack.addArrangedSubview(makeCustomModelRow(field: cleanupCustomModelField, button: cleanupCustomModelButton))
         stack.addArrangedSubview(cleanupEnabledCheckbox)
         stack.addArrangedSubview(autoPunctuationCheckbox)
+        stack.addArrangedSubview(makeLabeledRow(label: "Punctuation style", control: punctuationStylePopup))
+        stack.addArrangedSubview(makeLabeledRow(label: "Prompt preset", control: promptProfilePopup))
+        stack.addArrangedSubview(makePromptProfileButtonRow())
+        stack.addArrangedSubview(makeLabeledRow(label: "Prompt name", control: promptNameField))
+        stack.addArrangedSubview(makeLabeledTopRow(label: "System prompt", control: makePromptEditor(textView: systemPromptTextView, height: 130)))
+        stack.addArrangedSubview(makeLabeledTopRow(label: "User prompt", control: makePromptEditor(textView: userPromptTemplateTextView, height: 120)))
+        stack.addArrangedSubview(promptPresetNoteLabel)
         stack.addArrangedSubview(saveAudioCheckbox)
+        stack.addArrangedSubview(reviewBeforePasteCheckbox)
         stack.addArrangedSubview(setupNoteLabel)
         stack.addArrangedSubview(makeDownloadRow())
         stack.addArrangedSubview(makeSeparator())
@@ -377,10 +458,16 @@ final class SettingsWindowController: NSWindowController {
             cleanupProviderPopup.widthAnchor.constraint(equalToConstant: 180),
             cleanupModelPopup.widthAnchor.constraint(equalToConstant: 290),
             cleanupCustomModelField.widthAnchor.constraint(equalToConstant: 320),
+            punctuationStylePopup.widthAnchor.constraint(equalToConstant: 220),
+            promptProfilePopup.widthAnchor.constraint(equalToConstant: 260),
+            promptNameField.widthAnchor.constraint(equalToConstant: 320),
+            holdToTalkDelayPopup.widthAnchor.constraint(equalToConstant: 160),
             groqAPIKeyField.widthAnchor.constraint(equalToConstant: 320),
         ])
 
         updateCustomModelPlaceholders()
+        updateHoldToTalkControlsState()
+        refreshCleanupPromptProfileUI()
         updateRuntimePreparationControlState()
     }
 
@@ -391,6 +478,17 @@ final class SettingsWindowController: NSWindowController {
         let row = NSStackView(views: [titleLabel, control])
         row.orientation = .horizontal
         row.alignment = .centerY
+        row.spacing = 12
+        return row
+    }
+
+    private func makeLabeledTopRow(label: String, control: NSView) -> NSView {
+        let titleLabel = NSTextField(labelWithString: label)
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [titleLabel, control])
+        row.orientation = .horizontal
+        row.alignment = .top
         row.spacing = 12
         return row
     }
@@ -427,6 +525,27 @@ final class SettingsWindowController: NSWindowController {
         return row
     }
 
+    private func makePromptProfileButtonRow() -> NSView {
+        let row = NSStackView(views: [newPromptProfileButton, duplicatePromptProfileButton, deletePromptProfileButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        return row
+    }
+
+    private func makePromptEditor(textView: NSTextView, height: CGFloat) -> NSView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = textView
+        scrollView.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return scrollView
+    }
+
     private func makeVocabularyEditor() -> NSView {
         let scrollView = NSScrollView()
         scrollView.borderType = .bezelBorder
@@ -458,10 +577,61 @@ final class SettingsWindowController: NSWindowController {
         field.translatesAutoresizingMaskIntoConstraints = false
     }
 
+    private func configurePromptTextView(_ textView: NSTextView) {
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.isRichText = false
+        textView.usesFindBar = true
+        textView.allowsUndo = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.frame = NSRect(x: 0, y: 0, width: 480, height: 120)
+        textView.textContainerInset = NSSize(width: 6, height: 8)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .textColor
+    }
+
+    private func updatePromptTextViewLayout(_ textView: NSTextView) {
+        guard let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager else {
+            return
+        }
+
+        let availableWidth = max(textView.enclosingScrollView?.contentSize.width ?? textView.frame.width, 1)
+        let minimumHeight = max(textView.enclosingScrollView?.contentSize.height ?? textView.frame.height, 1)
+        textContainer.containerSize = NSSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude)
+        layoutManager.ensureLayout(for: textContainer)
+
+        let usedHeight = ceil(layoutManager.usedRect(for: textContainer).height + (textView.textContainerInset.height * 2))
+        textView.frame = NSRect(x: 0, y: 0, width: availableWidth, height: max(minimumHeight, usedHeight))
+    }
+
     private func repopulateProviderPopup(_ popup: NSPopUpButton, selected provider: InferenceProvider) {
         popup.removeAllItems()
         popup.addItems(withTitles: InferenceProvider.allCases.map(\.title))
         popup.selectItem(at: InferenceProvider.allCases.firstIndex(of: provider) ?? 0)
+    }
+
+    private func repopulatePunctuationStylePopup(selected style: CleanupPunctuationStyle) {
+        punctuationStylePopup.removeAllItems()
+        punctuationStylePopup.addItems(withTitles: CleanupPunctuationStyle.allCases.map(\.title))
+        punctuationStylePopup.selectItem(at: CleanupPunctuationStyle.allCases.firstIndex(of: style) ?? 0)
+    }
+
+    private func repopulateHoldToTalkDelayPopup(selectedMilliseconds: Int) {
+        holdToTalkDelayOptions = Array(Set(defaultHoldToTalkDelayOptions + [max(0, selectedMilliseconds)])).sorted()
+        holdToTalkDelayPopup.removeAllItems()
+        holdToTalkDelayPopup.addItems(withTitles: holdToTalkDelayOptions.map { "\($0) ms" })
+        if let index = holdToTalkDelayOptions.firstIndex(of: max(0, selectedMilliseconds)) {
+            holdToTalkDelayPopup.selectItem(at: index)
+        }
     }
 
     private func repopulate(_ popup: NSPopUpButton, with options: [ModelOption], selectedID: String) {
@@ -500,11 +670,79 @@ final class SettingsWindowController: NSWindowController {
             ? "Custom Groq cleanup model ID"
             : "Custom local cleanup model ID"
         groqAPIKeyField.placeholderString = "gsk_..."
+        promptNameField.placeholderString = "Prompt preset name"
     }
 
     private func updateRuntimePreparationControlState() {
         downloadButton.isEnabled = runtimePreparationNeeded && !isPreparingRuntime
         downloadButton.title = runtimePreparationNeeded ? "Download Selected Local Models" : "No Local Runtime Needed"
+    }
+
+    private func updateHoldToTalkControlsState() {
+        holdToTalkDelayPopup.isEnabled = currentHoldToTalkEnabled
+    }
+
+    private func selectedCleanupPromptProfile() -> CleanupPromptProfile? {
+        currentCleanupPromptProfiles.first(where: { $0.id == currentSelectedCleanupPromptProfileID })
+    }
+
+    private func refreshCleanupPromptProfileUI() {
+        promptProfilePopup.removeAllItems()
+        promptProfilePopup.addItems(withTitles: currentCleanupPromptProfiles.map(\.resolvedName))
+        if let index = currentCleanupPromptProfiles.firstIndex(where: { $0.id == currentSelectedCleanupPromptProfileID }) {
+            promptProfilePopup.selectItem(at: index)
+        }
+
+        let selectedProfile = selectedCleanupPromptProfile() ?? CleanupPromptProfile.defaultProfile
+        promptNameField.stringValue = selectedProfile.resolvedName
+        systemPromptTextView.string = selectedProfile.systemPrompt
+        userPromptTemplateTextView.string = selectedProfile.userPromptTemplate
+        window?.contentView?.layoutSubtreeIfNeeded()
+        updatePromptTextViewLayout(systemPromptTextView)
+        updatePromptTextViewLayout(userPromptTemplateTextView)
+
+        let isEditable = !selectedProfile.resolvedIsBuiltIn
+        promptNameField.isEditable = isEditable
+        promptNameField.isEnabled = isEditable
+        systemPromptTextView.isEditable = isEditable
+        userPromptTemplateTextView.isEditable = isEditable
+        deletePromptProfileButton.isEnabled = isEditable
+        duplicatePromptProfileButton.isEnabled = true
+    }
+
+    private func nextPromptProfileName(base: String) -> String {
+        let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidateBase = trimmedBase.isEmpty ? "Custom Prompt" : trimmedBase
+        let existing = Set(currentCleanupPromptProfiles.map { $0.resolvedName.lowercased() })
+        if !existing.contains(candidateBase.lowercased()) {
+            return candidateBase
+        }
+
+        var suffix = 2
+        while existing.contains("\(candidateBase) \(suffix)".lowercased()) {
+            suffix += 1
+        }
+
+        return "\(candidateBase) \(suffix)"
+    }
+
+    private func persistCurrentPromptProfiles() {
+        onCleanupPromptProfilesChange?(currentCleanupPromptProfiles, currentSelectedCleanupPromptProfileID)
+    }
+
+    private func updateSelectedCleanupPromptProfile(_ mutate: (CleanupPromptProfile) -> CleanupPromptProfile) {
+        guard let index = currentCleanupPromptProfiles.firstIndex(where: { $0.id == currentSelectedCleanupPromptProfileID }) else {
+            return
+        }
+
+        let existing = currentCleanupPromptProfiles[index]
+        guard !existing.resolvedIsBuiltIn else {
+            return
+        }
+
+        currentCleanupPromptProfiles[index] = mutate(existing)
+        refreshCleanupPromptProfileUI()
+        persistCurrentPromptProfiles()
     }
 
     private func setVocabularyRows(from entries: [VocabularyEntry]) {
@@ -626,8 +864,91 @@ final class SettingsWindowController: NSWindowController {
         onAutoPunctuationChange?(autoPunctuationCheckbox.state == .on)
     }
 
+    @objc private func handleCleanupPunctuationStyleChanged() {
+        let index = punctuationStylePopup.indexOfSelectedItem
+        guard CleanupPunctuationStyle.allCases.indices.contains(index) else {
+            return
+        }
+
+        let style = CleanupPunctuationStyle.allCases[index]
+        currentCleanupPunctuationStyle = style
+        onCleanupPunctuationStyleChange?(style)
+    }
+
+    @objc private func handlePromptProfileChanged() {
+        let index = promptProfilePopup.indexOfSelectedItem
+        guard currentCleanupPromptProfiles.indices.contains(index) else {
+            return
+        }
+
+        currentSelectedCleanupPromptProfileID = currentCleanupPromptProfiles[index].id
+        refreshCleanupPromptProfileUI()
+        persistCurrentPromptProfiles()
+    }
+
+    @objc private func handleAddPromptProfile() {
+        let profile = CleanupPromptProfile(
+            id: UUID().uuidString,
+            name: nextPromptProfileName(base: "Custom Prompt"),
+            systemPrompt: CleanupPromptDefaults.systemPrompt,
+            userPromptTemplate: CleanupPromptDefaults.userPromptTemplate,
+            isBuiltIn: false
+        )
+        currentCleanupPromptProfiles.append(profile)
+        currentSelectedCleanupPromptProfileID = profile.id
+        refreshCleanupPromptProfileUI()
+        persistCurrentPromptProfiles()
+    }
+
+    @objc private func handleDuplicatePromptProfile() {
+        let sourceProfile = selectedCleanupPromptProfile() ?? CleanupPromptProfile.defaultProfile
+        let duplicated = CleanupPromptProfile(
+            id: UUID().uuidString,
+            name: nextPromptProfileName(base: "\(sourceProfile.resolvedName) Copy"),
+            systemPrompt: sourceProfile.systemPrompt,
+            userPromptTemplate: sourceProfile.userPromptTemplate,
+            isBuiltIn: false
+        )
+        currentCleanupPromptProfiles.append(duplicated)
+        currentSelectedCleanupPromptProfileID = duplicated.id
+        refreshCleanupPromptProfileUI()
+        persistCurrentPromptProfiles()
+    }
+
+    @objc private func handleDeletePromptProfile() {
+        guard let selectedProfile = selectedCleanupPromptProfile(), !selectedProfile.resolvedIsBuiltIn else {
+            return
+        }
+
+        currentCleanupPromptProfiles.removeAll { $0.id == selectedProfile.id }
+        currentSelectedCleanupPromptProfileID = CleanupPromptProfile.defaultProfileID
+        refreshCleanupPromptProfileUI()
+        persistCurrentPromptProfiles()
+    }
+
     @objc private func handleSaveAudioChanged() {
         onSaveAudioChange?(saveAudioCheckbox.state == .on)
+    }
+
+    @objc private func handleReviewBeforePasteChanged() {
+        onReviewBeforePasteChange?(reviewBeforePasteCheckbox.state == .on)
+    }
+
+    @objc private func handleHoldToTalkEnabledChanged() {
+        currentHoldToTalkEnabled = holdToTalkEnabledCheckbox.state == .on
+        updateHoldToTalkControlsState()
+        onHoldToTalkEnabledChange?(currentHoldToTalkEnabled)
+    }
+
+    @objc private func handleHoldToTalkDelayChanged() {
+        let index = holdToTalkDelayPopup.indexOfSelectedItem
+        guard holdToTalkDelayOptions.indices.contains(index) else {
+            return
+        }
+
+        let milliseconds = holdToTalkDelayOptions[index]
+        currentHoldToTalkDelayMilliseconds = milliseconds
+        onHoldToTalkDelayChange?(milliseconds)
     }
 
     @objc private func handleAddVocabularyRow() {
@@ -676,5 +997,68 @@ final class SettingsWindowController: NSWindowController {
     @objc private func handleClearGroqAPIKey() {
         groqAPIKeyField.stringValue = ""
         onClearGroqAPIKey?()
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard !isApplyingConfig,
+              let field = obj.object as? NSTextField,
+              field === promptNameField else {
+            return
+        }
+
+        let trimmedName = promptNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            refreshCleanupPromptProfileUI()
+            return
+        }
+
+        updateSelectedCleanupPromptProfile { profile in
+            CleanupPromptProfile(
+                id: profile.id,
+                name: trimmedName,
+                systemPrompt: profile.systemPrompt,
+                userPromptTemplate: profile.userPromptTemplate,
+                isBuiltIn: profile.resolvedIsBuiltIn
+            )
+        }
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+        guard !isApplyingConfig,
+              let textView = notification.object as? NSTextView else {
+            return
+        }
+
+        if textView === systemPromptTextView {
+            updateSelectedCleanupPromptProfile { profile in
+                CleanupPromptProfile(
+                    id: profile.id,
+                    name: profile.name,
+                    systemPrompt: systemPromptTextView.string,
+                    userPromptTemplate: profile.userPromptTemplate,
+                    isBuiltIn: profile.resolvedIsBuiltIn
+                )
+            }
+        } else if textView === userPromptTemplateTextView {
+            updateSelectedCleanupPromptProfile { profile in
+                CleanupPromptProfile(
+                    id: profile.id,
+                    name: profile.name,
+                    systemPrompt: profile.systemPrompt,
+                    userPromptTemplate: userPromptTemplateTextView.string,
+                    isBuiltIn: profile.resolvedIsBuiltIn
+                )
+            }
+        }
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView else {
+            return
+        }
+
+        if textView === systemPromptTextView || textView === userPromptTemplateTextView {
+            updatePromptTextViewLayout(textView)
+        }
     }
 }

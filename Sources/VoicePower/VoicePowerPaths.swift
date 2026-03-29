@@ -41,6 +41,22 @@ enum VoicePowerPaths {
         Bundle.main.resourceURL
     }
 
+    static var bundledRuntimeSeedURL: URL? {
+        bundledScriptsURL?.appendingPathComponent("RuntimeSeed", isDirectory: true)
+    }
+
+    static var bundledRuntimeVenvURL: URL? {
+        bundledRuntimeSeedURL?.appendingPathComponent("venv", isDirectory: true)
+    }
+
+    static var bundledRuntimeManifestURL: URL? {
+        bundledRuntimeSeedURL?.appendingPathComponent("manifest.json")
+    }
+
+    static var installedBundledRuntimeManifestURL: URL {
+        runtimeRootURL.appendingPathComponent("bundled-runtime-manifest.json")
+    }
+
     static var repoRootURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

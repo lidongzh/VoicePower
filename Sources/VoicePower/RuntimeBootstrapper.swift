@@ -86,6 +86,10 @@ actor RuntimeBootstrapper {
             try? fileManager.removeItem(at: VoicePowerPaths.runtimeReadyMarkerURL)
         }
 
+        if try installBundledRuntimeIfAvailable() {
+            return
+        }
+
         let bootstrapPython = try locateBootstrapPython()
 
         if !fileManager.isExecutableFile(atPath: VoicePowerPaths.runtimePythonURL.path) {
@@ -132,6 +136,34 @@ actor RuntimeBootstrapper {
         }
 
         try "ready\n".write(to: VoicePowerPaths.runtimeReadyMarkerURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func installBundledRuntimeIfAvailable() throws -> Bool {
+        let fileManager = FileManager.default
+        guard let bundledRuntimeVenvURL = VoicePowerPaths.bundledRuntimeVenvURL,
+              fileManager.fileExists(atPath: bundledRuntimeVenvURL.path) else {
+            return false
+        }
+
+        try? fileManager.removeItem(at: VoicePowerPaths.runtimeVenvURL)
+        try? fileManager.removeItem(at: VoicePowerPaths.runtimeReadyMarkerURL)
+        try? fileManager.removeItem(at: VoicePowerPaths.installedBundledRuntimeManifestURL)
+
+        try fileManager.copyItem(at: bundledRuntimeVenvURL, to: VoicePowerPaths.runtimeVenvURL)
+
+        if let bundledManifestURL = VoicePowerPaths.bundledRuntimeManifestURL,
+           fileManager.fileExists(atPath: bundledManifestURL.path) {
+            try fileManager.copyItem(at: bundledManifestURL, to: VoicePowerPaths.installedBundledRuntimeManifestURL)
+        }
+
+        guard runtimePythonLooksCompatible(at: VoicePowerPaths.runtimePythonURL) else {
+            try? fileManager.removeItem(at: VoicePowerPaths.runtimeVenvURL)
+            try? fileManager.removeItem(at: VoicePowerPaths.installedBundledRuntimeManifestURL)
+            return false
+        }
+
+        try "ready\n".write(to: VoicePowerPaths.runtimeReadyMarkerURL, atomically: true, encoding: .utf8)
+        return true
     }
 
     private static func prefetchWhisperModel(_ model: String) throws {

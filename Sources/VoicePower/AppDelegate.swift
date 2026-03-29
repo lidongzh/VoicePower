@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasPresentedInputMonitoringReminder = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ApplicationMenuController.installMainMenuIfNeeded()
         Task {
             await inferenceWorker.setStatusHandler { [weak self] state in
                 Task { @MainActor in
@@ -87,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 groqClient: groqClient
             )
             let textInjector = TextInjector(restoreClipboard: config.insertion.restoreClipboard)
+            let reviewWindowController = ReviewWindowController()
             let voiceTypingController = VoiceTypingController(
                 audioRecorder: audioRecorder,
                 transcriber: transcriber,
@@ -94,8 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 textNormalizer: textNormalizer,
                 textPolisher: textPolisher,
                 textInjector: textInjector,
+                reviewWindowController: reviewWindowController,
                 permissions: permissions,
-                saveAudioFiles: config.saveAudioFilesEnabled
+                saveAudioFiles: config.saveAudioFilesEnabled,
+                reviewBeforePaste: config.reviewBeforePasteEnabled
             )
 
             voiceTypingController.onStateChange = { [weak self] state in
@@ -141,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         },
                         onRelease: { [weak voiceTypingController] in
                             voiceTypingController?.endHoldToTalk()
+                        },
+                        onCancel: { [weak voiceTypingController] in
+                            voiceTypingController?.cancelHoldToTalk()
                         }
                     )
                 } catch {
@@ -226,8 +233,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onAutoPunctuationChange = { [weak self] enabled in
             self?.setAutoPunctuationEnabled(enabled)
         }
+        controller.onCleanupPunctuationStyleChange = { [weak self] style in
+            self?.setCleanupPunctuationStyle(style)
+        }
+        controller.onCleanupPromptProfilesChange = { [weak self] promptProfiles, selectedPromptProfileID in
+            self?.setCleanupPromptProfiles(promptProfiles, selectedPromptProfileID: selectedPromptProfileID)
+        }
         controller.onSaveAudioChange = { [weak self] enabled in
             self?.setSaveAudioEnabled(enabled)
+        }
+        controller.onReviewBeforePasteChange = { [weak self] enabled in
+            self?.setReviewBeforePasteEnabled(enabled)
+        }
+        controller.onHoldToTalkEnabledChange = { [weak self] enabled in
+            self?.setHoldToTalkEnabled(enabled)
+        }
+        controller.onHoldToTalkDelayChange = { [weak self] milliseconds in
+            self?.setHoldToTalkDelayMilliseconds(milliseconds)
         }
         controller.onVocabularySave = { [weak self] enabled, rawText in
             self?.setVocabulary(enabled: enabled, rawText: rawText)
@@ -456,7 +478,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "VoicePower is setting itself up"
         alert.informativeText = """
-        VoicePower runs as a menu bar app. It has already created a default config at \(configPath) and is now preparing the local runtime and Whisper model in the background.
+        VoicePower runs as a menu bar app. It has already created a default config at \(configPath).
+
+        If local transcription, local cleanup, or simplified-Chinese normalization are enabled, VoicePower will prepare the local runtime and any selected local models in the background. In a portable runtime build, the base runtime may already be bundled and only the models still need downloading.
 
         Cleanup model download stays optional until you turn Cleanup on in Settings.
         """
@@ -601,6 +625,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func setCleanupPunctuationStyle(_ style: CleanupPunctuationStyle) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingCleanupPunctuationStyle(style),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update punctuation style"
+        )
+    }
+
+    private func setCleanupPromptProfiles(_ promptProfiles: [CleanupPromptProfile], selectedPromptProfileID: String) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        do {
+            let validatedProfiles = try validateCleanupPromptProfiles(
+                promptProfiles,
+                selectedPromptProfileID: selectedPromptProfileID
+            )
+            persistUpdatedConfig(
+                currentConfig.settingCleanupPromptProfiles(validatedProfiles, selectedPromptProfileID: selectedPromptProfileID),
+                to: currentConfigURL,
+                errorPrefix: "Failed to update cleanup prompts"
+            )
+        } catch {
+            presentRuntimeAlert(message: "Failed to update cleanup prompts: \(error.localizedDescription)")
+        }
+    }
+
     private func setSaveAudioEnabled(_ enabled: Bool) {
         guard let currentConfig, let currentConfigURL else {
             presentRuntimeAlert(message: "Config is not loaded yet")
@@ -611,6 +669,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentConfig.settingSaveAudioFilesEnabled(enabled),
             to: currentConfigURL,
             errorPrefix: "Failed to update save-audio setting"
+        )
+    }
+
+    private func setReviewBeforePasteEnabled(_ enabled: Bool) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingReviewBeforePasteEnabled(enabled),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update review-before-paste setting"
+        )
+    }
+
+    private func setHoldToTalkEnabled(_ enabled: Bool) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingHoldToTalkEnabled(enabled),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update hold-to-talk setting"
+        )
+    }
+
+    private func setHoldToTalkDelayMilliseconds(_ milliseconds: Int) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingHoldToTalkActivationDelayMilliseconds(milliseconds),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update hold-to-talk delay"
         )
     }
 
@@ -696,6 +793,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return entries
+    }
+
+    private func validateCleanupPromptProfiles(
+        _ promptProfiles: [CleanupPromptProfile],
+        selectedPromptProfileID: String
+    ) throws -> [CleanupPromptProfile] {
+        let selectedID = selectedPromptProfileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedID.isEmpty else {
+            throw VoicePowerError.invalidConfig(reason: "A cleanup prompt preset must be selected")
+        }
+
+        var seenIDs = Set<String>()
+        var normalizedProfiles: [CleanupPromptProfile] = []
+
+        for profile in promptProfiles {
+            let id = profile.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let systemPrompt = profile.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            let userPromptTemplate = profile.userPromptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !id.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "Cleanup prompt preset IDs cannot be empty")
+            }
+            guard !seenIDs.contains(id) else {
+                throw VoicePowerError.invalidConfig(reason: "Cleanup prompt preset IDs must be unique")
+            }
+            guard !name.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "Cleanup prompt preset names cannot be empty")
+            }
+            guard !systemPrompt.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "System prompt cannot be empty")
+            }
+            guard !userPromptTemplate.isEmpty else {
+                throw VoicePowerError.invalidConfig(reason: "User prompt template cannot be empty")
+            }
+            guard userPromptTemplate.contains("{{text}}") else {
+                throw VoicePowerError.invalidConfig(reason: "User prompt template must contain {{text}}")
+            }
+
+            seenIDs.insert(id)
+            normalizedProfiles.append(
+                CleanupPromptProfile(
+                    id: id,
+                    name: name,
+                    systemPrompt: systemPrompt,
+                    userPromptTemplate: userPromptTemplate,
+                    isBuiltIn: profile.resolvedIsBuiltIn
+                )
+            )
+        }
+
+        guard normalizedProfiles.contains(where: { $0.id == selectedID }) else {
+            throw VoicePowerError.invalidConfig(reason: "Selected cleanup prompt preset was not found")
+        }
+
+        return normalizedProfiles
     }
 
     private func persistUpdatedConfig(_ updatedConfig: AppConfig, to url: URL, errorPrefix: String) {

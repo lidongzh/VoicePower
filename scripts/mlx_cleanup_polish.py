@@ -31,6 +31,11 @@ Return only the final cleaned text.
 Raw transcript:
 {{text}}"""
 
+ENGLISH_PUNCTUATION_CLAUSE = """When adding punctuation, use English punctuation only.
+Keep English punctuation attached to the word before it, with one space after it when another token follows, including Chinese text.
+Do not add a space before English punctuation.
+Never replace English punctuation with Chinese punctuation marks."""
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Clean up dictated text with a local MLX model.")
@@ -47,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--enable-punctuation", action="store_true")
     parser.add_argument("--disable-punctuation", action="store_true")
+    parser.add_argument("--punctuation-style", choices=("chinese", "english"), default="chinese")
     return parser
 
 
@@ -88,12 +94,19 @@ def download_model(model: str) -> str:
     )
 
 
-def build_prompt(raw_text: str, system_prompt: str, user_prompt_template: str, enable_punctuation: bool) -> tuple[str, str]:
-    punctuation_clause = (
-        "Add punctuation when it is safe and helpful, but do not rewrite content."
-        if enable_punctuation
-        else "Do not add punctuation unless the original transcript already makes it obvious. Preserve the transcript almost verbatim."
-    )
+def build_prompt(
+    raw_text: str,
+    system_prompt: str,
+    user_prompt_template: str,
+    enable_punctuation: bool,
+    punctuation_style: str,
+) -> tuple[str, str]:
+    if enable_punctuation:
+        punctuation_clause = "Add punctuation when it is safe and helpful, but do not rewrite content."
+        if punctuation_style == "english":
+            punctuation_clause = f"{punctuation_clause}\n{ENGLISH_PUNCTUATION_CLAUSE}"
+    else:
+        punctuation_clause = "Do not add punctuation unless the original transcript already makes it obvious. Preserve the transcript almost verbatim."
     final_system_prompt = f"{system_prompt}\n{punctuation_clause}"
     final_user_prompt = user_prompt_template.replace("{{text}}", raw_text)
     return final_system_prompt, final_user_prompt
@@ -111,6 +124,7 @@ def generate_text(
     temperature: float,
     max_tokens: int,
     enable_punctuation: bool,
+    punctuation_style: str,
 ) -> str:
     from mlx_lm import generate, load
     try:
@@ -119,7 +133,13 @@ def generate_text(
         make_sampler = None
 
     model, tokenizer = load(model_path_or_repo)
-    system_prompt, user_prompt = build_prompt(raw_text, system_prompt, user_prompt_template, enable_punctuation)
+    system_prompt, user_prompt = build_prompt(
+        raw_text,
+        system_prompt,
+        user_prompt_template,
+        enable_punctuation,
+        punctuation_style,
+    )
     prompt = f"{system_prompt}\n\n{user_prompt}"
 
     if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
@@ -220,6 +240,7 @@ def main() -> int:
             temperature=args.temperature,
             max_tokens=args.max_tokens,
             enable_punctuation=enable_punctuation,
+            punctuation_style=args.punctuation_style,
         )
     except Exception as error:
         print(f"cleanup model inference failed: {error}", file=sys.stderr)

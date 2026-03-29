@@ -62,6 +62,17 @@ final class AudioRecorder: NSObject {
         return recordingURL
     }
 
+    func cancelRecording() {
+        guard let recorder, let recordingURL = currentRecordingURL else {
+            return
+        }
+
+        recorder.stop()
+        self.recorder = nil
+        currentRecordingURL = nil
+        try? FileManager.default.removeItem(at: recordingURL)
+    }
+
     private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
