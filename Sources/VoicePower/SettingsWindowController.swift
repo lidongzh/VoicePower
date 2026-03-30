@@ -95,7 +95,7 @@ enum VoicePowerModelCatalog {
 }
 
 @MainActor
-final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NSTextFieldDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSTextFieldDelegate {
     var onTranscriptionProviderChange: ((InferenceProvider) -> Void)?
     var onWhisperModelChange: ((String) -> Void)?
     var onCleanupProviderChange: ((InferenceProvider) -> Void)?
@@ -132,6 +132,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
     private let newPromptProfileButton = NSButton(title: "New Prompt", target: nil, action: nil)
     private let duplicatePromptProfileButton = NSButton(title: "Duplicate", target: nil, action: nil)
     private let deletePromptProfileButton = NSButton(title: "Delete", target: nil, action: nil)
+    private let activePromptProfileLabel = NSTextField(labelWithString: "Active cleanup prompt: Default")
     private let promptNameField = NSTextField()
     private let systemPromptTextView = NSTextView()
     private let userPromptTemplateTextView = NSTextView()
@@ -183,6 +184,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 640, height: 720)
         super.init(window: window)
+        window.delegate = self
         buildUI()
     }
 
@@ -306,6 +308,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
         promptPresetNoteLabel.textColor = .secondaryLabelColor
         vocabularyNoteLabel.textColor = .secondaryLabelColor
         holdToTalkNoteLabel.textColor = .secondaryLabelColor
+        activePromptProfileLabel.textColor = .secondaryLabelColor
         runtimeStatusLabel.textColor = .secondaryLabelColor
         workerStatusLabel.textColor = .secondaryLabelColor
         whisperStatusLabel.textColor = .secondaryLabelColor
@@ -405,6 +408,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
         stack.addArrangedSubview(autoPunctuationCheckbox)
         stack.addArrangedSubview(makeLabeledRow(label: "Punctuation style", control: punctuationStylePopup))
         stack.addArrangedSubview(makeLabeledRow(label: "Prompt preset", control: promptProfilePopup))
+        stack.addArrangedSubview(activePromptProfileLabel)
         stack.addArrangedSubview(makePromptProfileButtonRow())
         stack.addArrangedSubview(makeLabeledRow(label: "Prompt name", control: promptNameField))
         stack.addArrangedSubview(makeLabeledTopRow(label: "System prompt", control: makePromptEditor(textView: systemPromptTextView, height: 130)))
@@ -694,6 +698,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
         }
 
         let selectedProfile = selectedCleanupPromptProfile() ?? CleanupPromptProfile.defaultProfile
+        let activePromptSuffix = selectedProfile.resolvedIsBuiltIn ? " (built in)" : ""
+        activePromptProfileLabel.stringValue = "Active cleanup prompt: \(selectedProfile.resolvedName)\(activePromptSuffix)"
         promptNameField.stringValue = selectedProfile.resolvedName
         systemPromptTextView.string = selectedProfile.systemPrompt
         userPromptTemplateTextView.string = selectedProfile.userPromptTemplate
@@ -728,6 +734,51 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
 
     private func persistCurrentPromptProfiles() {
         onCleanupPromptProfilesChange?(currentCleanupPromptProfiles, currentSelectedCleanupPromptProfileID)
+    }
+
+    @discardableResult
+    private func captureVisiblePromptProfileEdits() -> Bool {
+        guard let index = currentCleanupPromptProfiles.firstIndex(where: { $0.id == currentSelectedCleanupPromptProfileID }) else {
+            return false
+        }
+
+        let existing = currentCleanupPromptProfiles[index]
+        guard !existing.resolvedIsBuiltIn else {
+            return false
+        }
+
+        let trimmedName = promptNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = CleanupPromptProfile(
+            id: existing.id,
+            name: trimmedName.isEmpty ? existing.resolvedName : trimmedName,
+            systemPrompt: systemPromptTextView.string,
+            userPromptTemplate: userPromptTemplateTextView.string,
+            isBuiltIn: existing.resolvedIsBuiltIn
+        )
+
+        guard updated != existing else {
+            return false
+        }
+
+        currentCleanupPromptProfiles[index] = updated
+        return true
+    }
+
+    private func commitVisiblePromptProfileEdits() {
+        guard !isApplyingConfig else {
+            return
+        }
+
+        let changed = captureVisiblePromptProfileEdits()
+        if let selectedProfile = selectedCleanupPromptProfile(),
+           !selectedProfile.resolvedIsBuiltIn,
+           promptNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            promptNameField.stringValue = selectedProfile.resolvedName
+        }
+
+        if changed {
+            persistCurrentPromptProfiles()
+        }
     }
 
     private func updateSelectedCleanupPromptProfile(_ mutate: (CleanupPromptProfile) -> CleanupPromptProfile) {
@@ -876,6 +927,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
     }
 
     @objc private func handlePromptProfileChanged() {
+        captureVisiblePromptProfileEdits()
+
         let index = promptProfilePopup.indexOfSelectedItem
         guard currentCleanupPromptProfiles.indices.contains(index) else {
             return
@@ -887,6 +940,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
     }
 
     @objc private func handleAddPromptProfile() {
+        captureVisiblePromptProfileEdits()
+
         let profile = CleanupPromptProfile(
             id: UUID().uuidString,
             name: nextPromptProfileName(base: "Custom Prompt"),
@@ -901,6 +956,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
     }
 
     @objc private func handleDuplicatePromptProfile() {
+        captureVisiblePromptProfileEdits()
+
         let sourceProfile = selectedCleanupPromptProfile() ?? CleanupPromptProfile.defaultProfile
         let duplicated = CleanupPromptProfile(
             id: UUID().uuidString,
@@ -916,6 +973,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
     }
 
     @objc private func handleDeletePromptProfile() {
+        captureVisiblePromptProfileEdits()
+
         guard let selectedProfile = selectedCleanupPromptProfile(), !selectedProfile.resolvedIsBuiltIn else {
             return
         }
@@ -999,6 +1058,14 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
         onClearGroqAPIKey?()
     }
 
+    func windowDidResignKey(_ notification: Notification) {
+        commitVisiblePromptProfileEdits()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        commitVisiblePromptProfileEdits()
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
         guard !isApplyingConfig,
               let field = obj.object as? NSTextField,
@@ -1012,15 +1079,7 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
             return
         }
 
-        updateSelectedCleanupPromptProfile { profile in
-            CleanupPromptProfile(
-                id: profile.id,
-                name: trimmedName,
-                systemPrompt: profile.systemPrompt,
-                userPromptTemplate: profile.userPromptTemplate,
-                isBuiltIn: profile.resolvedIsBuiltIn
-            )
-        }
+        commitVisiblePromptProfileEdits()
     }
 
     func textDidEndEditing(_ notification: Notification) {
@@ -1029,26 +1088,8 @@ final class SettingsWindowController: NSWindowController, NSTextViewDelegate, NS
             return
         }
 
-        if textView === systemPromptTextView {
-            updateSelectedCleanupPromptProfile { profile in
-                CleanupPromptProfile(
-                    id: profile.id,
-                    name: profile.name,
-                    systemPrompt: systemPromptTextView.string,
-                    userPromptTemplate: profile.userPromptTemplate,
-                    isBuiltIn: profile.resolvedIsBuiltIn
-                )
-            }
-        } else if textView === userPromptTemplateTextView {
-            updateSelectedCleanupPromptProfile { profile in
-                CleanupPromptProfile(
-                    id: profile.id,
-                    name: profile.name,
-                    systemPrompt: profile.systemPrompt,
-                    userPromptTemplate: userPromptTemplateTextView.string,
-                    isBuiltIn: profile.resolvedIsBuiltIn
-                )
-            }
+        if textView === systemPromptTextView || textView === userPromptTemplateTextView {
+            commitVisiblePromptProfileEdits()
         }
     }
 

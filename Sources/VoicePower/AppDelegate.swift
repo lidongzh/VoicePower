@@ -305,11 +305,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let requirements = config.localRuntimeRequirements
-        guard requirements.needsPreparation else {
-            refreshRuntimeStatus(using: config)
-            return
-        }
-
         runtimePreparationTask?.cancel()
         runtimePreparationTask = Task { [weak self] in
             guard let self else {
@@ -317,6 +312,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             do {
+                if !requirements.needsWorker {
+                    try await inferenceWorker.prepare(for: config)
+                }
+
+                guard requirements.needsPreparation else {
+                    let snapshot = await runtimeBootstrapper.snapshot(for: config)
+                    await MainActor.run {
+                        updateHoldToTalkPermissionStatus(using: config)
+                        applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
+                    }
+                    return
+                }
+
                 await MainActor.run {
                     applyRuntimeStatuses(
                         runtime: requirements.needsBaseRuntime ? "Preparing" : "Not Needed",

@@ -193,6 +193,12 @@ actor InferenceWorkerManager {
     }
 
     func shutdown() async {
+        guard let process, process.isRunning else {
+            intentionalShutdown = true
+            await teardownProcess(markAsStopped: true)
+            return
+        }
+
         intentionalShutdown = true
         do {
             _ = try await sendRequest(

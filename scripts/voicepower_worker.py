@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import gc
 import io
 import json
 import os
@@ -209,6 +210,8 @@ class WorkerState:
     def prepare(self, whisper_model: Optional[str], cleanup_enabled: bool, cleanup_model: Optional[str]) -> dict:
         if whisper_model:
             self._ensure_whisper_loaded(whisper_model)
+        else:
+            self._unload_whisper()
 
         if cleanup_enabled and cleanup_model:
             self._ensure_cleanup_loaded(cleanup_model)
@@ -288,6 +291,8 @@ class WorkerState:
             import mlx.core as mx
             from mlx_whisper.transcribe import ModelHolder
 
+            if self.whisper_model_path is not None:
+                self._unload_whisper()
             ModelHolder.get_model(resolved_model, mx.float16)
             self.whisper_model_id = model_id
             self.whisper_model_path = resolved_model
@@ -299,6 +304,8 @@ class WorkerState:
         if resolved_model != self.cleanup_model_path:
             from mlx_lm import load
 
+            if self.cleanup_model_path is not None:
+                self._unload_cleanup()
             self.cleanup_model, self.cleanup_tokenizer = load(resolved_model)
             self.cleanup_model_id = model_id
             self.cleanup_model_path = resolved_model
@@ -306,10 +313,43 @@ class WorkerState:
         return resolved_model
 
     def _unload_cleanup(self) -> None:
+        if self.cleanup_model_id is None and self.cleanup_model_path is None and self.cleanup_model is None:
+            return
+
         self.cleanup_model_id = None
         self.cleanup_model_path = None
         self.cleanup_model = None
         self.cleanup_tokenizer = None
+        self._clear_runtime_caches()
+
+    def _unload_whisper(self) -> None:
+        if self.whisper_model_id is None and self.whisper_model_path is None:
+            return
+
+        from mlx_whisper.transcribe import ModelHolder
+
+        ModelHolder.model = None
+        ModelHolder.model_path = None
+        self.whisper_model_id = None
+        self.whisper_model_path = None
+        self._clear_runtime_caches()
+
+    def close(self) -> None:
+        self._unload_whisper()
+        self._unload_cleanup()
+        self._clear_runtime_caches()
+
+    def _clear_runtime_caches(self) -> None:
+        gc.collect()
+        try:
+            import mlx.core as mx
+
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            pass
 
     def _generate_cleanup_text(
         self,
@@ -448,6 +488,7 @@ def main() -> int:
             elif method == "health":
                 result = worker.health()
             elif method == "shutdown":
+                worker.close()
                 result = {"status": "stopping"}
                 sys.stdout.write(make_response(request_id, True, result=result) + "\n")
                 sys.stdout.flush()
