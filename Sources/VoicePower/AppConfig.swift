@@ -366,6 +366,22 @@ struct AppConfig: Codable, Sendable {
         )
     }
 
+    func settingSimplifiedChineseNormalizationEnabled(_ enabled: Bool) -> AppConfig {
+        let nextNormalization = resolvedNormalization.withSimplifiedChinese(enabled)
+
+        return AppConfig(
+            recordingsDirectory: recordingsDirectory,
+            recording: recording,
+            hotkey: hotkey,
+            holdToTalk: holdToTalk,
+            transcription: transcription,
+            normalization: nextNormalization,
+            cleanup: cleanup,
+            vocabulary: vocabulary,
+            insertion: insertion
+        )
+    }
+
     func normalizedForPersistence() -> AppConfig {
         AppConfig(
             recordingsDirectory: recordingsDirectory,
@@ -680,7 +696,7 @@ struct TextNormalizationConfig: Codable, Sendable {
     }
 
     var usesManagedRuntime: Bool {
-        simplifiedChinese && !usesLegacyCommand
+        false
     }
 
     var looksLikeLegacyManagedRuntime: Bool {
@@ -696,6 +712,14 @@ struct TextNormalizationConfig: Codable, Sendable {
             simplifiedChinese: simplifiedChinese,
             command: nil,
             arguments: nil
+        )
+    }
+
+    func withSimplifiedChinese(_ enabled: Bool) -> TextNormalizationConfig {
+        TextNormalizationConfig(
+            simplifiedChinese: enabled,
+            command: command,
+            arguments: arguments
         )
     }
 

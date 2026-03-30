@@ -65,12 +65,10 @@ VoicePower only prepares the local runtime when a local stage still needs it.
 
 Examples:
 
-- If transcription is `Groq`, cleanup is `Groq`, and simplified-Chinese normalization is off:
+- If transcription is `Groq` and cleanup is `Groq`:
   - local worker is not used
   - local runtime is not needed
-- If transcription is `Groq`, cleanup is `Groq`, and simplified-Chinese normalization is on:
-  - the local worker is still not used
-  - the local runtime is still needed for normalization
+  - simplified-Chinese normalization can still stay on because that conversion is built in
 - If either transcription or cleanup is `Local`:
   - the local runtime is needed
   - the worker is started only when required

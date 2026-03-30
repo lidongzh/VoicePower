@@ -98,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 textInjector: textInjector,
                 reviewWindowController: reviewWindowController,
                 permissions: permissions,
+                prepareForProcessing: { [weak self] in
+                    try await self?.ensureRuntimeReadyForCurrentConfigIfNeeded()
+                },
                 saveAudioFiles: config.saveAudioFilesEnabled,
                 reviewBeforePaste: config.reviewBeforePasteEnabled
             )
@@ -160,7 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             refreshRuntimeStatus(using: config)
-            prepareRuntimeIfNeeded()
 
             if loadedConfig.createdDefaultConfig {
                 presentFirstLaunchAlert(configPath: configURL.path)
@@ -186,6 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runtimePreparationTask = Task { [weak self] in
             guard let self else {
                 return
+            }
+
+            if !config.localRuntimeRequirements.needsWorker {
+                await inferenceWorker.shutdown()
             }
 
             let snapshot = await runtimeBootstrapper.snapshot(for: config)
@@ -244,6 +250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.onReviewBeforePasteChange = { [weak self] enabled in
             self?.setReviewBeforePasteEnabled(enabled)
+        }
+        controller.onSimplifiedChineseNormalizationChange = { [weak self] enabled in
+            self?.setSimplifiedChineseNormalizationEnabled(enabled)
         }
         controller.onHoldToTalkEnabledChange = { [weak self] enabled in
             self?.setHoldToTalkEnabled(enabled)
@@ -312,64 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             do {
-                if !requirements.needsWorker {
-                    try await inferenceWorker.prepare(for: config)
-                }
-
-                guard requirements.needsPreparation else {
-                    let snapshot = await runtimeBootstrapper.snapshot(for: config)
-                    await MainActor.run {
-                        updateHoldToTalkPermissionStatus(using: config)
-                        applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
-                    }
-                    return
-                }
-
-                await MainActor.run {
-                    applyRuntimeStatuses(
-                        runtime: requirements.needsBaseRuntime ? "Preparing" : "Not Needed",
-                        worker: requirements.needsWorker ? "Pending" : "Not Used",
-                        whisper: requirements.needsWhisperModel ? "Downloading" : whisperStatusText(for: config, snapshot: nil),
-                        cleanup: requirements.needsCleanupModel ? "Pending Download" : cleanupStatusText(for: config, snapshot: nil),
-                        isPreparing: true
-                    )
-                }
-                if requirements.needsBaseRuntime {
-                    try await runtimeBootstrapper.ensureBaseRuntimeReady()
-                }
-
-                if requirements.needsWhisperModel {
-                    try await runtimeBootstrapper.ensureWhisperModelReady(config.resolvedTranscription.resolvedModel)
-                }
-
-                if requirements.needsCleanupModel {
-                    await MainActor.run {
-                        applyRuntimeStatuses(
-                            runtime: "Ready",
-                            worker: requirements.needsWorker ? "Pending" : "Not Used",
-                            whisper: whisperStatusText(for: config, snapshot: nil, forceLocalReady: true),
-                            cleanup: "Downloading",
-                            isPreparing: true
-                        )
-                    }
-                    try await runtimeBootstrapper.ensureCleanupModelReady(config.resolvedCleanup.resolvedModel)
-                }
-
-                if requirements.needsWorker {
-                    await MainActor.run {
-                        applyWorkerStatus("Warming")
-                    }
-                    try await inferenceWorker.prepare(for: config)
-                }
-
-                let snapshot = await runtimeBootstrapper.snapshot(for: config)
-
-                await MainActor.run {
-                    applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
-                    if requirements.needsWorker {
-                        applyWorkerStatus("Ready")
-                    }
-                }
+                try await ensureRuntimeReady(for: config)
             } catch is CancellationError {
                 await MainActor.run {
                     settingsWindowController?.setRuntimePreparationInProgress(false)
@@ -386,6 +338,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     presentRuntimeAlert(message: error.localizedDescription)
                 }
+            }
+        }
+    }
+
+    private func ensureRuntimeReadyForCurrentConfigIfNeeded() async throws {
+        guard let currentConfig else {
+            return
+        }
+
+        try await ensureRuntimeReady(for: currentConfig)
+    }
+
+    private func ensureRuntimeReady(for config: AppConfig) async throws {
+        let requirements = config.localRuntimeRequirements
+
+        if !requirements.needsWorker {
+            await inferenceWorker.shutdown()
+        }
+
+        guard requirements.needsPreparation else {
+            let snapshot = await runtimeBootstrapper.snapshot(for: config)
+            await MainActor.run {
+                updateHoldToTalkPermissionStatus(using: config)
+                applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
+            }
+            return
+        }
+
+        await MainActor.run {
+            applyRuntimeStatuses(
+                runtime: requirements.needsBaseRuntime ? "Preparing" : "Not Needed",
+                worker: requirements.needsWorker ? "Pending" : "Not Used",
+                whisper: requirements.needsWhisperModel ? "Downloading" : whisperStatusText(for: config, snapshot: nil),
+                cleanup: requirements.needsCleanupModel ? "Pending Download" : cleanupStatusText(for: config, snapshot: nil),
+                isPreparing: true
+            )
+        }
+
+        if requirements.needsBaseRuntime {
+            try await runtimeBootstrapper.ensureBaseRuntimeReady()
+        }
+
+        if requirements.needsWhisperModel {
+            try await runtimeBootstrapper.ensureWhisperModelReady(config.resolvedTranscription.resolvedModel)
+        }
+
+        if requirements.needsCleanupModel {
+            await MainActor.run {
+                applyRuntimeStatuses(
+                    runtime: "Ready",
+                    worker: requirements.needsWorker ? "Pending" : "Not Used",
+                    whisper: whisperStatusText(for: config, snapshot: nil, forceLocalReady: true),
+                    cleanup: "Downloading",
+                    isPreparing: true
+                )
+            }
+            try await runtimeBootstrapper.ensureCleanupModelReady(config.resolvedCleanup.resolvedModel)
+        }
+
+        if requirements.needsWorker {
+            await MainActor.run {
+                applyWorkerStatus("Warming")
+            }
+            try await inferenceWorker.prepare(for: config)
+        }
+
+        let snapshot = await runtimeBootstrapper.snapshot(for: config)
+
+        await MainActor.run {
+            applyRuntimeSnapshot(snapshot, for: config, isPreparing: false)
+            if requirements.needsWorker {
+                applyWorkerStatus("Ready")
             }
         }
     }
@@ -488,7 +512,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = """
         VoicePower runs as a menu bar app. It has already created a default config at \(configPath).
 
-        If local transcription, local cleanup, or simplified-Chinese normalization are enabled, VoicePower will prepare the local runtime and any selected local models in the background. In a portable runtime build, the base runtime may already be bundled and only the models still need downloading.
+        VoicePower no longer prepares local runtime automatically on launch. It only prepares local runtime when you click Download Selected Local Models or when you actually use a local feature.
+
+        If you use Groq for transcription and cleanup, VoicePower does not need local runtime. Simplified-Chinese normalization is now built in.
 
         Cleanup model download stays optional until you turn Cleanup on in Settings.
         """
@@ -690,6 +716,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentConfig.settingReviewBeforePasteEnabled(enabled),
             to: currentConfigURL,
             errorPrefix: "Failed to update review-before-paste setting"
+        )
+    }
+
+    private func setSimplifiedChineseNormalizationEnabled(_ enabled: Bool) {
+        guard let currentConfig, let currentConfigURL else {
+            presentRuntimeAlert(message: "Config is not loaded yet")
+            return
+        }
+
+        persistUpdatedConfig(
+            currentConfig.settingSimplifiedChineseNormalizationEnabled(enabled),
+            to: currentConfigURL,
+            errorPrefix: "Failed to update Chinese-normalization setting"
         )
     }
 

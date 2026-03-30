@@ -16,7 +16,7 @@ fi
 
 "$VENV_DIR/bin/python3" -m pip install --upgrade pip setuptools wheel
 PIP_CACHE_DIR="$PIP_CACHE_DIR" HF_HOME="$HF_HOME_DIR" \
-  "$VENV_DIR/bin/python3" -m pip install --upgrade mlx-whisper opencc-python-reimplemented mlx-lm
+  "$VENV_DIR/bin/python3" -m pip install --upgrade mlx-whisper mlx-lm
 
 "$VENV_DIR/bin/python3" - <<'PY'
 import mlx_whisper

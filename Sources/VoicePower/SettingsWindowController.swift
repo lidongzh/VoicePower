@@ -106,6 +106,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onCleanupPromptProfilesChange: (([CleanupPromptProfile], String) -> Void)?
     var onSaveAudioChange: ((Bool) -> Void)?
     var onReviewBeforePasteChange: ((Bool) -> Void)?
+    var onSimplifiedChineseNormalizationChange: ((Bool) -> Void)?
     var onHoldToTalkEnabledChange: ((Bool) -> Void)?
     var onHoldToTalkDelayChange: ((Int) -> Void)?
     var onVocabularySave: ((Bool, String) -> Void)?
@@ -138,6 +139,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let userPromptTemplateTextView = NSTextView()
     private let saveAudioCheckbox = NSButton(checkboxWithTitle: "Save recorded audio files", target: nil, action: nil)
     private let reviewBeforePasteCheckbox = NSButton(checkboxWithTitle: "Review text before paste", target: nil, action: nil)
+    private let simplifiedChineseCheckbox = NSButton(checkboxWithTitle: "Use Simplified Chinese output", target: nil, action: nil)
     private let holdToTalkEnabledCheckbox = NSButton(checkboxWithTitle: "Enable right Command hold-to-talk", target: nil, action: nil)
     private let holdToTalkDelayPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let vocabularyEnabledCheckbox = NSButton(checkboxWithTitle: "Enable vocabulary corrections", target: nil, action: nil)
@@ -147,6 +149,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let cleanupStatusLabel = NSTextField(labelWithString: "Cleanup model: Optional")
     private let groqAPIKeyStatusLabel = NSTextField(labelWithString: "Groq API key: Not Saved")
     private let holdToTalkNoteLabel = NSTextField(labelWithString: "Disable this if you use right Command shortcuts. A longer delay reduces accidental trigger conflicts.")
+    private let simplifiedChineseNoteLabel = NSTextField(labelWithString: "Built in. Converts Traditional Chinese characters to Simplified Chinese without local model downloads or runtime bootstrap.")
     private let setupNoteLabel = NSTextField(labelWithString: "Changing providers and models updates the app config immediately. Use “Download Selected Local Models” to prefetch only the local runtime and models still in use.")
     private let groqNoteLabel = NSTextField(labelWithString: "When Groq is selected, recorded audio or cleanup text is sent to Groq for inference. The Groq API key is stored in this Mac’s Keychain, not in the config file.")
     private let promptPresetNoteLabel = NSTextField(labelWithString: "Use {{text}} in the user prompt template. Default is built in and read-only; duplicate it before editing.")
@@ -159,8 +162,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private var whisperOptions: [ModelOption] = VoicePowerModelCatalog.localWhisperOptions
     private var cleanupOptions: [ModelOption] = VoicePowerModelCatalog.localCleanupOptions
-    private let defaultHoldToTalkDelayOptions = [180, 300, 500, 800]
-    private var holdToTalkDelayOptions: [Int] = [180, 300, 500, 800]
+    private let defaultHoldToTalkDelayOptions = [60, 120, 180, 300, 500, 800]
+    private var holdToTalkDelayOptions: [Int] = [60, 120, 180, 300, 500, 800]
     private var vocabularyRows: [VocabularyMappingRow] = []
     private var currentTranscriptionProvider: InferenceProvider = .local
     private var currentCleanupProvider: InferenceProvider = .local
@@ -244,6 +247,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         repopulatePunctuationStylePopup(selected: currentCleanupPunctuationStyle)
         saveAudioCheckbox.state = config.saveAudioFilesEnabled ? .on : .off
         reviewBeforePasteCheckbox.state = config.reviewBeforePasteEnabled ? .on : .off
+        simplifiedChineseCheckbox.state = config.resolvedNormalization.simplifiedChinese ? .on : .off
         holdToTalkEnabledCheckbox.state = currentHoldToTalkEnabled ? .on : .off
         repopulateHoldToTalkDelayPopup(selectedMilliseconds: currentHoldToTalkDelayMilliseconds)
         updateHoldToTalkControlsState()
@@ -303,11 +307,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         vocabularyNoteLabel.maximumNumberOfLines = 0
         holdToTalkNoteLabel.lineBreakMode = .byWordWrapping
         holdToTalkNoteLabel.maximumNumberOfLines = 0
+        simplifiedChineseNoteLabel.lineBreakMode = .byWordWrapping
+        simplifiedChineseNoteLabel.maximumNumberOfLines = 0
         setupNoteLabel.textColor = .secondaryLabelColor
         groqNoteLabel.textColor = .secondaryLabelColor
         promptPresetNoteLabel.textColor = .secondaryLabelColor
         vocabularyNoteLabel.textColor = .secondaryLabelColor
         holdToTalkNoteLabel.textColor = .secondaryLabelColor
+        simplifiedChineseNoteLabel.textColor = .secondaryLabelColor
         activePromptProfileLabel.textColor = .secondaryLabelColor
         runtimeStatusLabel.textColor = .secondaryLabelColor
         workerStatusLabel.textColor = .secondaryLabelColor
@@ -372,6 +379,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         saveAudioCheckbox.action = #selector(handleSaveAudioChanged)
         reviewBeforePasteCheckbox.target = self
         reviewBeforePasteCheckbox.action = #selector(handleReviewBeforePasteChanged)
+        simplifiedChineseCheckbox.target = self
+        simplifiedChineseCheckbox.action = #selector(handleSimplifiedChineseNormalizationChanged)
         addVocabularyButton.target = self
         addVocabularyButton.action = #selector(handleAddVocabularyRow)
         saveVocabularyButton.target = self
@@ -416,6 +425,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         stack.addArrangedSubview(promptPresetNoteLabel)
         stack.addArrangedSubview(saveAudioCheckbox)
         stack.addArrangedSubview(reviewBeforePasteCheckbox)
+        stack.addArrangedSubview(simplifiedChineseCheckbox)
+        stack.addArrangedSubview(simplifiedChineseNoteLabel)
         stack.addArrangedSubview(setupNoteLabel)
         stack.addArrangedSubview(makeDownloadRow())
         stack.addArrangedSubview(makeSeparator())
@@ -991,6 +1002,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func handleReviewBeforePasteChanged() {
         onReviewBeforePasteChange?(reviewBeforePasteCheckbox.state == .on)
+    }
+
+    @objc private func handleSimplifiedChineseNormalizationChanged() {
+        onSimplifiedChineseNormalizationChange?(simplifiedChineseCheckbox.state == .on)
     }
 
     @objc private func handleHoldToTalkEnabledChanged() {

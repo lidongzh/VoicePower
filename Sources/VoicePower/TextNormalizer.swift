@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 struct TextNormalizer: Sendable {
@@ -17,12 +18,31 @@ struct TextNormalizer: Sendable {
             return trimmed
         }
 
-        let invocation = try makeInvocation()
+        if config.usesLegacyCommand {
+            return try normalizeWithCommand(trimmed)
+        }
+
+        return try normalizeWithSystemTransform(trimmed)
+    }
+
+    private func normalizeWithSystemTransform(_ text: String) throws -> String {
+        let mutableText = NSMutableString(string: text)
+        let succeeded = CFStringTransform(mutableText, nil, "Traditional-Simplified" as CFString, false)
+        guard succeeded else {
+            throw VoicePowerError.textNormalizationFailed("Built-in Traditional-to-Simplified conversion failed")
+        }
+
+        let normalized = String(mutableText).trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? text : normalized
+    }
+
+    private func normalizeWithCommand(_ text: String) throws -> String {
+        let invocation = try makeCommandInvocation()
         let result = try ProcessRunner.run(
             executableURL: invocation.executableURL,
             arguments: invocation.arguments,
             environment: invocation.environment,
-            standardInput: "\(trimmed)\n"
+            standardInput: "\(text)\n"
         )
 
         guard result.terminationStatus == 0 else {
@@ -31,10 +51,10 @@ struct TextNormalizer: Sendable {
         }
 
         let normalized = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? trimmed : normalized
+        return normalized.isEmpty ? text : normalized
     }
 
-    private func makeInvocation() throws -> (executableURL: URL, arguments: [String], environment: [String: String]) {
+    private func makeCommandInvocation() throws -> (executableURL: URL, arguments: [String], environment: [String: String]) {
         if let command = config.command, let arguments = config.arguments, !arguments.isEmpty {
             let commandPath = command.expandedTildePath
             guard FileManager.default.isExecutableFile(atPath: commandPath) else {
@@ -48,17 +68,6 @@ struct TextNormalizer: Sendable {
             )
         }
 
-        let runtimePythonURL = VoicePowerPaths.runtimePythonURL
-        guard FileManager.default.isExecutableFile(atPath: runtimePythonURL.path) else {
-            throw VoicePowerError.runtimeBootstrapFailed("VoicePower runtime is not ready yet")
-        }
-
-        return (
-            executableURL: runtimePythonURL,
-            arguments: [
-                VoicePowerPaths.scriptURL(named: "simplify_chinese_text.py").path,
-            ],
-            environment: [:]
-        )
+        throw VoicePowerError.textNormalizationFailed("No valid Chinese-normalization command is configured")
     }
 }

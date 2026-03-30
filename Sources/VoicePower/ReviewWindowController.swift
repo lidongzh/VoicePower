@@ -1,13 +1,40 @@
 import AppKit
 
 @MainActor
+private final class ReviewTextView: NSTextView {
+    var onAccept: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        let normalizedFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isReturnKey = event.keyCode == 36 || event.keyCode == 76
+
+        guard isReturnKey else {
+            super.keyDown(with: event)
+            return
+        }
+
+        if normalizedFlags == [.shift] {
+            insertNewline(nil)
+            return
+        }
+
+        if normalizedFlags.isEmpty {
+            onAccept?()
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+}
+
+@MainActor
 final class ReviewWindowController: NSWindowController, NSWindowDelegate {
     private static let defaultWindowSize = NSSize(width: 500, height: 420)
     private static let savedWidthKey = "VoicePowerReviewWindow.v2.width"
     private static let savedHeightKey = "VoicePowerReviewWindow.v2.height"
     private let noteLabel: NSTextField = {
         let label = NSTextField(
-            wrappingLabelWithString: "Edit this dictation result, then choose Ready To Paste. VoicePower will put the edited text on the clipboard and switch back to the target app. Use that app’s normal paste shortcut there, typically Cmd+V on macOS or Ctrl+V in apps that use it."
+            wrappingLabelWithString: "Edit this dictation result, then choose Ready To Paste. Press Enter to accept, or Shift+Enter to insert a new line. VoicePower will put the edited text on the clipboard and switch back to the target app. Use that app’s normal paste shortcut there, typically Cmd+V on macOS or Ctrl+V in apps that use it."
         )
         label.translatesAutoresizingMaskIntoConstraints = false
         label.lineBreakMode = .byWordWrapping
@@ -17,7 +44,7 @@ final class ReviewWindowController: NSWindowController, NSWindowDelegate {
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return label
     }()
-    private let textView = NSTextView()
+    private let textView = ReviewTextView()
     private let readyButton = NSButton(title: "Ready To Paste", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
 
@@ -177,6 +204,9 @@ final class ReviewWindowController: NSWindowController, NSWindowDelegate {
         textView.font = NSFont.systemFont(ofSize: 15)
         textView.backgroundColor = .textBackgroundColor
         textView.textColor = .textColor
+        textView.onAccept = { [weak self] in
+            self?.handleReady()
+        }
 
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false

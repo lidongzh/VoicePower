@@ -5,8 +5,10 @@ enum DictationPostProcessor {
         var result = normalizeWhitespace(in: text)
         result = normalizeMixedLanguageSpacing(in: result)
         result = normalizePreferredPunctuationCharacters(in: result, punctuationStyle: punctuationStyle)
+        result = collapseDuplicatePunctuation(in: result, punctuationStyle: punctuationStyle)
         guard autoPunctuation else {
-            return cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
+            result = cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
+            return collapseDuplicatePunctuation(in: result, punctuationStyle: punctuationStyle)
         }
 
         result = normalizeListPunctuation(in: result, punctuationStyle: punctuationStyle)
@@ -14,6 +16,8 @@ enum DictationPostProcessor {
         result = addSentenceBreaks(in: result, punctuationStyle: punctuationStyle)
         result = addClauseCommas(in: result, punctuationStyle: punctuationStyle)
         result = addTerminalPunctuation(in: result, punctuationStyle: punctuationStyle)
+        result = cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
+        result = collapseDuplicatePunctuation(in: result, punctuationStyle: punctuationStyle)
         result = cleanupSpacingAroundPunctuation(in: result, punctuationStyle: punctuationStyle)
         return result
     }
@@ -77,6 +81,19 @@ enum DictationPostProcessor {
         }
 
         return result
+    }
+
+    private static func collapseDuplicatePunctuation(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {
+        let comma = punctuationStyle == .english ? "," : "，"
+        let period = punctuationStyle == .english ? "." : "。"
+        let question = punctuationStyle == .english ? "?" : "？"
+        let exclamation = punctuationStyle == .english ? "!" : "！"
+
+        return text
+            .replacingOccurrences(of: "[,，、](?:\\s*[,，、])+", with: comma, options: .regularExpression)
+            .replacingOccurrences(of: "[.。](?:\\s*[.。])+", with: period, options: .regularExpression)
+            .replacingOccurrences(of: "[?？](?:\\s*[?？])+", with: question, options: .regularExpression)
+            .replacingOccurrences(of: "[!！](?:\\s*[!！])+", with: exclamation, options: .regularExpression)
     }
 
     private static func addQuestionBreaks(in text: String, punctuationStyle: CleanupPunctuationStyle) -> String {

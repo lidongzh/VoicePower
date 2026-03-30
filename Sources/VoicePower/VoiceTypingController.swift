@@ -75,6 +75,7 @@ final class VoiceTypingController {
     private let textInjector: TextInjector
     private let reviewWindowController: ReviewWindowController
     private let permissions: PermissionCoordinator
+    private let prepareForProcessing: @Sendable () async throws -> Void
     private let saveAudioFiles: Bool
     private let reviewBeforePaste: Bool
 
@@ -94,6 +95,7 @@ final class VoiceTypingController {
         textInjector: TextInjector,
         reviewWindowController: ReviewWindowController,
         permissions: PermissionCoordinator,
+        prepareForProcessing: @escaping @Sendable () async throws -> Void,
         saveAudioFiles: Bool,
         reviewBeforePaste: Bool
     ) {
@@ -105,6 +107,7 @@ final class VoiceTypingController {
         self.textInjector = textInjector
         self.reviewWindowController = reviewWindowController
         self.permissions = permissions
+        self.prepareForProcessing = prepareForProcessing
         self.saveAudioFiles = saveAudioFiles
         self.reviewBeforePaste = reviewBeforePaste
     }
@@ -214,6 +217,7 @@ final class VoiceTypingController {
         let textPolisher = textPolisher
         let textInjector = textInjector
         let reviewWindowController = reviewWindowController
+        let prepareForProcessing = prepareForProcessing
         let saveAudioFiles = saveAudioFiles
         let reviewBeforePaste = reviewBeforePaste
 
@@ -221,6 +225,7 @@ final class VoiceTypingController {
             let result: Result<Void, Error>
 
             do {
+                try await prepareForProcessing()
                 let rawTranscript = try await Task.detached(priority: .userInitiated) {
                     try await transcriber.transcribe(audioFileURL: nextRecording.recordingURL)
                 }.value

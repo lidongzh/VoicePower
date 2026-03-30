@@ -126,7 +126,6 @@ actor RuntimeBootstrapper {
                 "install",
                 "--upgrade",
                 "mlx-whisper",
-                "opencc-python-reimplemented",
                 "mlx-lm",
             ],
             environment: installEnvironment

@@ -3,6 +3,13 @@ import Foundation
 struct GroqClient: Sendable {
     private let apiKeyStore: GroqAPIKeyStore
     private let baseURL = URL(string: "https://api.groq.com/openai/v1")!
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForRequest = 180
+        configuration.timeoutIntervalForResource = 300
+        return URLSession(configuration: configuration)
+    }()
 
     init(apiKeyStore: GroqAPIKeyStore) {
         self.apiKeyStore = apiKeyStore
@@ -13,6 +20,7 @@ struct GroqClient: Sendable {
         let boundary = "Boundary-\(UUID().uuidString)"
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 180
         request.httpBody = try makeTranscriptionBody(
             audioFileURL: audioFileURL,
@@ -38,6 +46,7 @@ struct GroqClient: Sendable {
         var request = try authorizedRequest(path: "chat/completions")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 180
         request.httpBody = try JSONEncoder().encode(
             ChatCompletionRequest(
@@ -74,7 +83,27 @@ struct GroqClient: Sendable {
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        try await perform(request, remainingRetries: 1)
+    }
+
+    private func perform(_ request: URLRequest, remainingRetries: Int) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await Self.session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            if remainingRetries > 0, shouldRetry(error) {
+                try await Task.sleep(nanoseconds: 400_000_000)
+                return try await perform(request, remainingRetries: remainingRetries - 1)
+            }
+
+            throw VoicePowerError.groqRequestFailed(networkErrorMessage(for: error))
+        } catch {
+            throw VoicePowerError.groqRequestFailed(error.localizedDescription)
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw VoicePowerError.groqRequestFailed("Missing HTTP response")
@@ -89,6 +118,38 @@ struct GroqClient: Sendable {
         }
 
         return data
+    }
+
+    private func shouldRetry(_ error: URLError) -> Bool {
+        switch error.code {
+        case .networkConnectionLost,
+             .timedOut,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func networkErrorMessage(for error: URLError) -> String {
+        switch error.code {
+        case .networkConnectionLost:
+            return "The connection to Groq was interrupted. VoicePower retried once, but the request still failed."
+        case .timedOut:
+            return "The request to Groq timed out."
+        case .notConnectedToInternet:
+            return "No internet connection is available for the Groq request."
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return "VoicePower could not reach Groq. Check DNS, VPN, proxy, or firewall settings."
+        case .secureConnectionFailed:
+            return "VoicePower could not establish a secure connection to Groq."
+        default:
+            return error.localizedDescription
+        }
     }
 
     private func makeTranscriptionBody(
